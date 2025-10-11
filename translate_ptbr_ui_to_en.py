@@ -1,0 +1,400 @@
+# translate_ptbr_ui_to_en.py
+# Uso: python3 translate_ptbr_ui_to_en.py app.py app_en.py
+import sys, pathlib
+
+def main(src, dst):
+    text = pathlib.Path(src).read_text(encoding="utf-8")
+
+    # Mapeamento PT-BR -> EN (apenas texto; sem mudar lógica)
+    # Dica: entradas mais longas primeiro para evitar colisões.
+    REPL = [
+        # ===== Títulos/Seções gerais =====
+        ("Configurações globais", "Global settings"),
+        ("Aplica-se a todos os fluxos.", "Applies to all flows."),
+        ("Fluxo de trabalho", "Workflow"),
+        ("Escolher fluxo", "Choose flow"),
+        ("Selecione o fluxo desejado.", "Select the desired flow."),
+        ("Batch — múltiplos arquivos", "Batch — multiple files"),
+
+        # ===== Cabeçalho e legendas gerais =====
+        ("ZIP/XML • Preview por canal • Análise XML • Comparação A×B • Produção/ROI & Break-even • Batch (múltiplos arquivos)",
+         "ZIP/XML • Channel preview • XML analysis • A×B comparison • Production/ROI & Break-even • Batch (multiple files)"),
+
+        # ===== Botões/ajudas globais =====
+        ("🧹 Reset", "🧹 Reset"),
+        ("Limpa todos os inputs e o estado da aplicação.", "Clears all inputs and the app state."),
+        ("Selecione o fluxo desejado.", "Select the desired flow."),
+
+        # ===== Unidade =====
+        ("Unidade base (global)", "Base unit (global)"),
+        ("metro linear", "linear meter"),
+        ("Muda a unidade base da aplicação (Single, A×B e Batch).", "Changes the app's base unit (Single, A×B and Batch)."),
+
+        # ===== SINGLE JOB =====
+        ("Upload do job", "Job upload"),
+        ("Envie um ZIP contendo pelo menos um XML e, opcionalmente, TIFF/JPG das separações.",
+         "Upload a ZIP containing at least one XML and optionally TIFF/JPG separations."),
+        ("Job (ZIP)", "Job (ZIP)"),
+        ("O ZIP deve conter ao menos um XML; TIFF/JPG são usados para previews.",
+         "The ZIP must contain at least one XML; TIFF/JPG are used for previews."),
+        ("Envie o **ZIP do Job** para continuar.", "Upload the **Job ZIP** to continue."),
+        ("Arquivos XML", "XML files"),
+        ("Arquivos JPG", "JPG files"),
+        ("Arquivos TIFF", "TIFF files"),
+        ("Arquivos AppleDouble (._*) detectados — serão ignorados.", "AppleDouble files (._*) detected — they will be ignored."),
+
+        ("Preview de canais — Job", "Channel preview — Job"),
+        ("Veja as separações e o consumo (ml/m²) do XML selecionado.",
+         "See separations and consumption (ml/m²) from the selected XML."),
+        ("Largura da caixa de preview (px)", "Preview box width (px)"),
+        ("Altura da caixa de preview (px)", "Preview box height (px)"),
+        ("As imagens são letterboxed para dimensões consistentes.", "Images are letterboxed for consistent dimensions."),
+        ("XML para legenda (ml/m²)", "XML for legend (ml/m²)"),
+        ("Usado para rotular consumo por canal e total.", "Used to label per-channel and total consumption."),
+        ("Nenhum TIFF de canal encontrado no ZIP.", "No channel TIFF found in the ZIP."),
+        ("Selecionado:", "Selected:"),
+        ("**Consumo por canal (ml/m²)**", "**Per-channel consumption (ml/m²)**"),
+        ("Canal", "Channel"),
+        ("Consumo total:", "Total consumption:"),
+        ("Pixels de fogo por canal (K)", "Fire pixels per channel (K)"),
+        ("Este XML não contém 'NumberOfFirePixelsPerSeparation'.",
+         "This XML does not contain 'NumberOfFirePixelsPerSeparation'."),
+
+        ("Análise do XML — por separação", "XML analysis — per separation"),
+        ("ml/m² por separação + pixels de fogo (se houver).",
+         "ml/m² per separation + fire pixels (if present)."),
+        ("O ZIP não contém XML.", "The ZIP does not contain XML."),
+        ("XML para analisar", "XML to analyze"),
+        ("Mostra consumo por separação (ml/m²) e pixels de fogo (se houver).",
+         "Shows per-separation consumption (ml/m²) and fire pixels (if present)."),
+        ("**Pixels de fogo por separação (K)**", "**Fire pixels per separation (K)**"),
+        ("Metadados do XML", "XML metadata"),
+
+        ("Simulação operacional", "Operational simulation"),
+        ("Ative para inserir fixos mensais, custos variáveis e exibir break-even.",
+         "Enable to enter monthly fixed and variable costs and show break-even."),
+        ("Ativar simulação de custos?", "Enable cost simulation?"),
+
+        ("Fixos (mensais) → alocação por unidade", "Fixed (monthly) → allocation per unit"),
+        ("Informe USD/mês e produção mensal. Calculamos $/unidade.",
+         "Enter USD/month and monthly production. We calculate $/unit."),
+        ("Mão de obra fixa — USD/mês", "Fixed labor — USD/month"),
+        ("Leasing/Assinaturas — USD/mês", "Leasing/Subscriptions — USD/month"),
+        ("Depreciação — USD/mês", "Depreciation — USD/month"),
+        ("Ind. fixos — USD/mês", "Overheads — USD/month"),
+        ("Salários ou equipe fixa por mês.", "Salaries or fixed staff per month."),
+        ("Leasing da impressora, RIP, contratos etc.",
+         "Printer leasing, RIP, contracts, etc."),
+        ("CAPEX mensal (depreciação).", "Monthly CAPEX (depreciation)."),
+        ("Energia base, seguro, aluguel, manutenção etc.",
+         "Base energy, insurance, rent, maintenance, etc."),
+        ("**Outros fixos (mensais) — opcional**", "**Other fixed (monthly) — optional**"),
+        ("Nome", "Name"),
+        ("Valor (USD)", "Amount (USD)"),
+        ("**Produção mensal (para alocação dos fixos)**", "**Monthly production (for fixed allocation)**"),
+        ("Como deseja informar a produção mensal?", "How do you want to provide monthly production?"),
+        ("Informar diretamente", "Enter directly"),
+        ("Calcular com ajudante", "Calculate with helper"),
+        ("Total produzido por mês em", "Total produced per month in"),
+        ("Turnos/dia", "Shifts/day"),
+        ("Dias/mês", "Days/month"),
+        ("Horas/turno", "Hours/shift"),
+        ("Vel média (m²/h)", "Avg speed (m²/h)"),
+        ("Largura utilizável (m)", "Usable width (m)"),
+        ("Fator de utilização (%)", "Utilization factor (%)"),
+        ("Turnos por dia.", "Shifts per day."),
+        ("Dias no mês.", "Days in the month."),
+        ("Horas por turno.", "Hours per shift."),
+        ("Velocidade média.", "Average speed."),
+        ("Usada p/ conversão m/h se unidade = metro.", "Used to convert m/h if unit = meter."),
+        ("Eficiência média.", "Average efficiency."),
+        ("Fixos — mensal (USD)", "Fixed — monthly (USD)"),
+        ("Produção mensal (", "Monthly production ("),
+        ("Alocação fixa (", "Fixed allocation ("),
+        ("Aplicar FIXED no simulador", "Apply FIXED into simulator"),
+        ("Fixos aplicados ao simulador.", "Fixed applied to simulator."),
+
+        ("Produção / ROI — simulador", "Production / ROI — simulator"),
+        ("Entradas em USD; escolha moeda de saída abaixo.",
+         "Inputs in USD; choose output currency below."),
+        ("Símbolo da moeda local", "Local currency symbol"),
+        ("USD → Local (FX)", "USD → Local (FX)"),
+        ("Moeda de saída", "Output currency"),
+        ("Local", "Local"),
+
+        ("XML para consumo (ml/m²)", "XML for consumption (ml/m²)"),
+        ("Será usado como base (ml/m²).", "Will be used as base (ml/m²)."),
+        ("Modo de impressão (afeta tempo)", "Print mode (affects time)"),
+        ("Usado para calcular tempo e, se habilitado, multiplicadores de consumo.",
+         "Used to compute time and, if enabled, consumption multipliers."),
+        ("Velocidade:", "Speed:"),
+
+        ("Custos variáveis → $ por unidade", "Variable costs → $ per unit"),
+        ("**Dimensões de produção (confirme/ajuste)**", "**Production dimensions (confirm/adjust)**"),
+        ("Comprimento (m)", "Length (m)"),
+        ("Perda (%)", "Waste (%)"),
+        ("Área do XML:", "XML area:"),
+        ("Fonte de consumo (ml/m²)", "Consumption source (ml/m²)"),
+        ("XML (exato)", "XML (exact)"),
+        ("XML + multiplicador por modo", "XML + mode multiplier"),
+        ("Multiplicadores por modo (%) — edite conforme seus testes",
+         "Per-mode multipliers (%) — edit per your tests"),
+        ("Manual —", "Manual —"),
+
+        ("**Entradas de custo variável**", "**Variable cost inputs**"),
+        ("Tinta colorida ($/L)", "Color ink ($/L)"),
+        ("Tinta branca ($/L)", "White ink ($/L)"),
+        ("FOF / Fixação ($/L)", "FOF / Pretreat ($/L)"),
+        ("Tecido (", "Substrate ("),
+        ("Mão de obra variável ($/h) — use só se NÃO estiver nos Fixos",
+         "Variable labor ($/h) — use only if NOT in Fixed"),
+        ("Mão de obra variável (", "Variable labor ("),
+        ("Outros variáveis (", "Other variables ("),
+        ("Valor", "Value"),
+        ("Alocação fixa (", "Fixed allocation ("),
+
+        ("**Preço de venda**", "**Selling price**"),
+        ("Preço ", "Price "),
+        ("Margem alvo (%)", "Target margin (%)"),
+        ("Impostos (%)", "Taxes (%)"),
+        ("Taxas/Condições (%)", "Fees/Terms (%)"),
+        ("Arredondar para", "Round to"),
+        ("Calcular produção", "Calculate production"),
+
+        ("O que significa cada custo?", "What does each cost mean?"),
+        ("**Tinta (incl. FOF)**", "**Ink (incl. FOF)**"),
+        ("Color + White + FOF, via consumo (ml/", "Color + White + FOF, from consumption (ml/"),
+        ("**Tecido**", "**Substrate**"),
+        ("Custo do substrato por", "Substrate cost per"),
+        ("**Outros var.**", "**Other var.**"),
+        ("Mão de obra variável", "Variable labor"),
+        ("itens opcionais", "optional items"),
+        ("**Variável**", "**Variable**"),
+        ("**Fixo**", "**Fixed**"),
+        ("Alocação de fixos mensais → ($/mês ÷ produção mensal) × quantidade.",
+         "Allocation of monthly fixed → ($/month ÷ monthly production) × quantity."),
+        ("**Custo ", "**Cost "),
+        ("**Preço ", "**Price "),
+
+        ("Quantidade (", "Quantity ("),
+        ("Área c/ perda (m²)", "Area w/ waste (m²)"),
+        ("Consumo total (ml/", "Total consumption (ml/"),
+
+        ("Totais ($)", "Totals ($)"),
+        ("Tinta ($)", "Ink ($)"),
+        ("Tecido ($)", "Substrate ($)"),
+        ("Outros var. ($)", "Other var. ($)"),
+        ("Variável ($)", "Variable ($)"),
+        ("Fixo ($)", "Fixed ($)"),
+        ("Total ($)", "Total ($)"),
+
+        ("Por unidade (", "Per unit ("),
+        ("Variável ", "Variable "),
+        ("Fixo ", "Fixed "),
+        ("**Custo ", "**Cost "),
+        ("**Preço ", "**Price "),
+
+        ("Composição — por unidade (pilha)", "Composition — per unit (stacked)"),
+        ("Composição — totais ($)", "Composition — totals ($)"),
+
+        ("Debug — variável/fixo", "Debug — variable/fixed"),
+
+        ("Break-even (mensal) — Single job", "Break-even (monthly) — Single job"),
+        ("Dica: preencha **Fixos (mensais)** e clique **Aplicar FIXED** para habilitar o BEP.",
+         "Tip: fill **Fixed (monthly)** and click **Apply FIXED** to enable BEP."),
+        ("Erro na simulação:", "Simulation error:"),
+
+        # ===== Gráfico BEP (português interno) =====
+        ("preencha preço, custo variável e fixo mensal.", "fill in price, variable cost and monthly fixed cost."),
+        ("Receita", "Revenue"),
+        ("Custo total", "Total cost"),
+        ("Volume (", "Volume ("),
+
+        # ===== COMPARE A×B =====
+        ("Upload jobs A e B", "Upload jobs A and B"),
+        ("Envie dois ZIPs (cada um precisa ter um XML; TIFF/JPG são opcionais para preview).",
+         "Upload two ZIPs (each must include an XML; TIFF/JPG are optional for preview)."),
+        ("Envie **ambos** os ZIPs para continuar.", "Upload **both** ZIPs to continue."),
+        ("AppleDouble (._*) detectados — serão ignorados.", "AppleDouble (._*) detected — will be ignored."),
+        ("Cada ZIP precisa conter pelo menos um XML.", "Each ZIP must contain at least one XML."),
+        ("Job setup", "Job setup"),
+        ("Escolha o XML de cada job (usado para consumo por canal, dimensões e metadados).",
+         "Choose the XML for each job (used for per-channel consumption, dimensions and metadata)."),
+        ("XML (A)", "XML (A)"),
+        ("XML (B)", "XML (B)"),
+
+        ("Pré-visualização por canal (A × B)", "Per-channel preview (A × B)"),
+        ("Nenhum canal disponível para pré-visualização.", "No channel available for preview."),
+        ("Selecionado (", "Selected ("),
+
+        ("Consumo por canal (ml/m²) —", "Per-channel consumption (ml/m²) —"),
+        ("Pixels de fogo por canal (K) —", "Fire pixels per channel (K) —"),
+
+        ("Comparativo A × B — Consumo por canal (ml/m²)", "A × B comparison — Per-channel consumption (ml/m²)"),
+        ("Comparativo A × B — Pixels de fogo por canal (K)", "A × B comparison — Fire pixels per channel (K)"),
+        ("Limite — Pixels de fogo (total K)", "Limit — Fire pixels (total K)"),
+        ("Limite (K pixels)", "Limit (K pixels)"),
+        ("Total de pixels de fogo vs limite (K)", "Total fire pixels vs limit (K)"),
+
+        ("Insights", "Insights"),
+        ("Maior diferença:", "Largest difference:"),
+        ("Menor consumo no **Job A**:", "Lowest consumption in **Job A**:"),
+        ("Menor consumo no **Job B**:", "Lowest consumption in **Job B**:"),
+        ("Exportar — PDF comparativo", "Export — comparative PDF"),
+        ("⬇️ Download A×B PDF", "⬇️ Download A×B PDF"),
+        ("Falha ao gerar PDF:", "Failed to generate PDF:"),
+
+        ("Simulador de custos / ROI", "Costs / ROI simulator"),
+        ("Defina dimensões, modo, fonte de consumo, custos e preços para A e B.",
+         "Set dimensions, mode, consumption source, costs and prices for A and B."),
+        ("Modo de impressão (A)", "Print mode (A)"),
+        ("Modo de impressão (B)", "Print mode (B)"),
+        ("Dimensões + desperdício", "Dimensions + waste"),
+        ("Largura A (m)", "Width A (m)"),
+        ("Comprimento A (m)", "Length A (m)"),
+        ("Largura B (m)", "Width B (m)"),
+        ("Comprimento B (m)", "Length B (m)"),
+        ("Desperdício A (%)", "Waste A (%)"),
+        ("Desperdício B (%)", "Waste B (%)"),
+        ("Fonte de consumo (A)", "Consumption source (A)"),
+        ("Fonte de consumo (B)", "Consumption source (B)"),
+        ("XML + multiplicador", "XML + multiplier"),
+
+        ("Custos variáveis", "Variable costs"),
+        ("Substrato (", "Substrate ("),
+        ("Mão-de-obra variável ($/h) — use apenas se NÃO estiver dentro dos fixos",
+         "Variable labor ($/h) — use only if NOT included in fixed"),
+        ("Outros variáveis (", "Other variables ("),
+
+        ("Custos fixos", "Fixed costs"),
+        ("Como definir fixo por unidade?", "How to set fixed per unit?"),
+        ("Direto por unidade", "Direct per unit"),
+        ("Ajudante mensal", "Monthly helper"),
+        ("Fixo — total mensal (USD)", "Fixed — monthly total (USD)"),
+        ("Produção mensal (", "Monthly production ("),
+        ("Fixo por unidade (A e B):", "Fixed per unit (A and B):"),
+
+        ("Moeda e Preços", "Currency and Prices"),
+        ("Símbolo moeda local", "Local currency symbol"),
+        ("Moeda de saída", "Output currency"),
+        ("Preço A ", "Price A "),
+        ("Preço B ", "Price B "),
+        ("Calcular A × B", "Compute A × B"),
+
+        ("Resultados — por unidade e totais", "Results — per unit and totals"),
+        ("Δ (B − A)", "Δ (B − A)"),
+        ("Por unidade", "Per unit"),
+        ("Totais ($)", "Totals ($)"),
+        ("Por unidade (stack)", "Per unit (stack)"),
+        ("A — Totais", "A — Totals"),
+        ("B — Totais", "B — Totals"),
+
+        ("Break-even (mensal) — A vs B", "Break-even (monthly) — A vs B"),
+        ("Para gráficos de break-even, preencha **Ajudante mensal** com Fixo (USD/mês) e Produção mensal.",
+         "For break-even charts, fill **Monthly helper** with Fixed (USD/month) and Monthly production."),
+
+        ("Exportar — CSV resumo A×B", "Export — A×B summary CSV"),
+        ("⬇️ Download CSV — A×B", "⬇️ Download CSV — A×B"),
+        ("Erro no cálculo A×B:", "A×B calculation error:"),
+
+        # ===== BATCH =====
+        ("Enviar múltiplos jobs", "Upload multiple jobs"),
+        ("Selecione vários ZIPs. Cada ZIP deve conter ao menos um XML. Você poderá ajustar largura/comprimento por arquivo.",
+         "Select multiple ZIPs. Each ZIP must contain at least one XML. You can adjust width/length per file."),
+        ("Jobs (ZIPs)", "Jobs (ZIPs)"),
+        ("Selecione vários ZIPs; cada um deve conter pelo menos um XML.",
+         "Select multiple ZIPs; each must contain at least one XML."),
+        ("Envie um ou mais ZIPs para continuar.", "Upload one or more ZIPs to continue."),
+
+        ("Moeda e saída", "Currency and output"),
+        ("Defina símbolo local e FX para exibição/exports.",
+         "Set local symbol and FX for display/exports."),
+        ("Moeda de saída", "Output currency"),
+
+        ("Produção global", "Global production"),
+        ("Define padrão de modo de impressão e desperdício (pode ser sobrescrito por arquivo).",
+         "Set default print mode and waste (can be overridden per file)."),
+        ("Modo de impressão (todos)", "Print mode (all)"),
+        ("Desperdício padrão (%) (todos)", "Default waste (%) (all)"),
+
+        ("Fonte de consumo (ml/m²) — todos os jobs", "Consumption source (ml/m²) — all jobs"),
+        ("Multiplicadores (%) — aplicados a todos os jobs", "Multipliers (%) — applied to all jobs"),
+
+        ("Custos variáveis (compartilhados)", "Variable costs (shared)"),
+        ("Preço das tintas, substrato e mão-de-obra variável (opcional).",
+         "Ink pricing, substrate and variable labor (optional)."),
+        ("Substrato (", "Substrate ("),
+        ("Mão-de-obra variável ($/h) — opcional", "Variable labor ($/h) — optional"),
+
+        ("Custos fixos", "Fixed costs"),
+        ("Informe fixo por unidade diretamente ou calcule via total mensal / produção.",
+         "Enter per-unit fixed directly or compute via monthly total / production."),
+        ("Fixo por unidade (batch)", "Fixed per unit (batch)"),
+        ("Fixo por unidade (", "Fixed per unit ("),
+        ("Fixo — total mensal (USD)", "Fixed — monthly total (USD)"),
+        ("Produção mensal (", "Monthly production ("),
+
+        ("Por arquivo — XML e dimensões", "Per file — XML and dimensions"),
+        ("Em cada arquivo, escolha o XML e ajuste largura/comprimento/desperdício se quiser.",
+         "For each file, choose the XML and adjust width/length/waste if needed."),
+        ("Nenhum XML encontrado (será ignorado no cálculo).",
+         "No XML found (will be ignored in the calculation)."),
+        ("XML — ", "XML — "),
+        ("XML a utilizar", "XML to use"),
+        ("Esta escolha atualiza a tabela abaixo.", "This choice updates the table below."),
+        ("Nada para calcular ainda.", "Nothing to calculate yet."),
+
+        # Tabela batch
+        ("Arquivo", "File"),
+        ("XML selecionado", "Selected XML"),
+        ("Largura XML (m)", "XML width (m)"),
+        ("Comprimento XML (m)", "XML length (m)"),
+        ("Largura (override m)", "Width (override m)"),
+        ("Comprimento (override m)", "Length (override m)"),
+        ("Desperdício (%)", "Waste (%)"),
+
+        ("Calcular batch", "Compute batch"),
+
+        ("Resultados do batch", "Batch results"),
+        ("Área c/ desperdício (m²)", "Area w/ waste (m²)"),
+        ("Qtd (", "Qty ("),
+        ("ml/m² (total)", "ml/m² (total)"),
+        ("Tinta $", "Ink $"),
+        ("Substrato $", "Substrate $"),
+        ("Outros $", "Other $"),
+        ("Fixo $", "Fixed $"),
+        ("Total $", "Total $"),
+        ("Custo ", "Cost "),
+
+        ("Resumo", "Summary"),
+        ("Custo médio ponderado ", "Weighted average cost "),
+        ("⬇️ Download CSV — Batch", "⬇️ Download CSV — Batch"),
+
+        # ===== Mensagens diversas =====
+        ("Falha no preview:", "Preview failed:"),
+        ("O job não contém", "This job does not contain"),
+        ("Erro:", "Error:"),
+        ("Dica:", "Tip:"),
+        ("Pré-visualização", "Preview"),
+        ("Escolha", "Choose"),
+        ("Comparação A × B — Consumo por Canal (ml/m²)", "A × B comparison — Consumption by Channel (ml/m²)"),
+        ("Composição 100%", "100% composition"),
+        ("Pixels de fogo", "Fire pixels"),
+        ("Canal", "Channel"),
+        ("Por arquivo", "Per file"),
+        ("Produção / ROI", "Production / ROI"),
+        ("Totais", "Totals"),
+    ]
+
+    # Aplicar substituições (ordem dada acima)
+    for a, b in REPL:
+        text = text.replace(a, b)
+
+    pathlib.Path(dst).write_text(text, encoding="utf-8")
+    print(f"✔ Done. Wrote: {dst}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python3 translate_ptbr_ui_to_en.py app.py app_en.py")
+        sys.exit(1)
+    main(sys.argv[1], sys.argv[2])

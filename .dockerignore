@@ -1,0 +1,11 @@
+.venv
+__pycache__
+.DS_Store
+*.zip
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+backup*
+BACKUP*
