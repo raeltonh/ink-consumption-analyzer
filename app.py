@@ -2428,7 +2428,7 @@ def ui_compare_option_b():
                             render_img_box_html(img, prev_w, prev_h, alt=path)
                         else:
                             img = letterbox(img, prev_w, prev_h)
-                            st.image(img, caption=path, use_container_width=False, width=prev_w)
+                            st.image(img, caption=path, width=prev_w)
                     else:
                         if bool(st.session_state.get("cmp_trim_channels", True)):
                             img = trim_margins(img)
@@ -2437,7 +2437,7 @@ def ui_compare_option_b():
                             render_img_box_html(img, prev_w, prev_h, alt=path)
                         else:
                             img = letterbox(img, prev_w, prev_h)
-                            st.image(img, caption=path, use_container_width=False, width=prev_w)
+                            st.image(img, caption=path, width=prev_w)
                     if selected_channel != "Preview" and mlm2:
                         v = mlm2.get(selected_channel)
                         if v is not None:
@@ -3701,7 +3701,7 @@ def ui_single():
                         render_img_box_html(img, prev_w, prev_h, alt=path)
                     else:
                         img = letterbox(img, prev_w, prev_h)
-                        st.image(img, caption=path, use_container_width=False, width=prev_w)
+                        st.image(img, caption=path, width=prev_w)
                 else:
                     if bool(st.session_state.get("single_trim_channels", True)):
                         img = trim_margins(img)
@@ -3710,7 +3710,7 @@ def ui_single():
                         render_img_box_html(img, prev_w, prev_h, alt=path)
                     else:
                         img = letterbox(img, prev_w, prev_h)
-                        st.image(img, caption=path, use_container_width=False, width=prev_w)
+                        st.image(img, caption=path, width=prev_w)
                 sel = st.session_state.get("single_chan_sel")
                 if sel != "Preview" and mlm2:
                     v = mlm2.get(sel)
@@ -4454,7 +4454,7 @@ def ui_compare():
             try:
                 img = load_preview_light(zip_file.getvalue(), path, max_side=int(preview_w*1.35))
                 img = letterbox(img, preview_w, preview_h)
-                st.image(img, caption=path, use_container_width=False, width=preview_w)
+                st.image(img, caption=path, width=preview_w)
             except Exception as e:
                 st.info(f"{label}: preview unavailable ({e})")
         else:
