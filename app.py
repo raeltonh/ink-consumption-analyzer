@@ -2707,8 +2707,8 @@ def ui_compare_option_b():
     if "cmp_job_show_px" not in st.session_state:
         st.session_state["cmp_job_show_px"] = True
     tj1, tj2, tj3 = st.columns(3)
-    tj1.checkbox("Show per-job ml/m² charts", value=st.session_state.get("cmp_job_show_ml", True), key="cmp_job_show_ml")
-    tj2.checkbox("Show per-job pixels charts (K)", value=st.session_state.get("cmp_job_show_px", True), key="cmp_job_show_px")
+    tj1.checkbox("Show per-job ml/m² charts", key="cmp_job_show_ml")
+    tj2.checkbox("Show per-job pixels charts (K)", key="cmp_job_show_px")
     tj3.checkbox("Show per-job values on bars", value=st.session_state.get("cmp_job_show_vals", False), key="cmp_job_show_vals")
 
     # Render dos dois blocos (A e B)
@@ -2738,7 +2738,6 @@ def ui_compare_option_b():
         )
         ctrl2.checkbox(
             "Show insights",
-            value=st.session_state.get("cmp_show_insights", True),
             key="cmp_show_insights",
         )
 
@@ -2836,6 +2835,10 @@ def ui_compare_option_b():
 
         # Optional PDF export of this comparison (respects the current ordering)
         # PDF layout controls
+        if "cmp_pdf_show_comp" not in st.session_state:
+            st.session_state["cmp_pdf_show_comp"] = True
+        if "cmp_pdf_show_totals" not in st.session_state:
+            st.session_state["cmp_pdf_show_totals"] = True
         cpdf1, cpdf2, cpdf3 = st.columns([1.2, 1.0, 1.2])
         size_opt = cpdf1.selectbox(
             "PDF preview size",
@@ -2844,8 +2847,8 @@ def ui_compare_option_b():
             key="cmp_pdf_size",
             help="Defines thumbnail size and chart/table layout."
         )
-        show_comp = cpdf2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
-        show_totals = cpdf3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
+        show_comp = cpdf2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
+        show_totals = cpdf3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
 
         try:
             nameA = st.session_state.get("cmpA_zip_name", "Job A")
@@ -3318,7 +3321,7 @@ def render_axb_per_channel_chart(height=None):
         key="cmp_sort_choice",
         help="Choose how to order the channels in the A×B chart.",
     )
-    ctrl2.checkbox("Show insights", value=st.session_state.get("cmp_show_insights", True), key="cmp_show_insights")
+    ctrl2.checkbox("Show insights", key="cmp_show_insights")
 
     # ordem base e reordenação opcional
     ordered = ["Cyan","Magenta","Yellow","Black","Red","Green","FOF","White"]
@@ -3732,8 +3735,8 @@ def ui_single():
     if "single_show_px" not in st.session_state:
         st.session_state["single_show_px"] = True
     sct1, sct2 = st.columns(2)
-    sct1.checkbox("Show ml/m² chart", value=st.session_state.get("single_show_ml", True), key="single_show_ml")
-    sct2.checkbox("Show pixels chart (K)", value=st.session_state.get("single_show_px", True), key="single_show_px")
+    sct1.checkbox("Show ml/m² chart", key="single_show_ml")
+    sct2.checkbox("Show pixels chart (K)", key="single_show_px")
     # Per-channel consumption (ml/m²) — auto render (no Update button)
     if st.session_state.get("single_show_ml", True):
         render_title_with_hint(
@@ -3891,8 +3894,8 @@ def ui_single():
         index={"Small":0,"Medium":1,"Large":2}.get(st.session_state.get("cmp_pdf_size","Medium"),1),
         key="cmp_pdf_size",
         help="Defines thumbnail size and chart/table layout.")
-    show_comp = sp2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
-    show_totals = sp3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
+    show_comp = sp2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
+    show_totals = sp3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
 
     try:
         # Use current mlm2 directly to avoid dependency on chart state
@@ -4558,8 +4561,8 @@ def ui_compare():
         key="cmp_pdf_size",
         help="Defines thumbnail size and chart/table layout."
     )
-    show_comp = spdf2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
-    show_totals = spdf3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
+    show_comp = spdf2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
+    show_totals = spdf3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
 
     with st.spinner("Building A×B PDF…"):
         pdf_bytes = build_comparison_pdf_matplotlib(
@@ -5364,8 +5367,8 @@ def ui_batch():
         if "batch_show_perfile_px" not in st.session_state:
             st.session_state["batch_show_perfile_px"] = True
         pf1, pf2 = st.columns(2)
-        pf1.checkbox("Show per-file ml/m² totals", value=st.session_state.get("batch_show_perfile_ml", True), key="batch_show_perfile_ml")
-        pf2.checkbox("Show per-file pixels totals (K)", value=st.session_state.get("batch_show_perfile_px", True), key="batch_show_perfile_px")
+        pf1.checkbox("Show per-file ml/m² totals", key="batch_show_perfile_ml")
+        pf2.checkbox("Show per-file pixels totals (K)", key="batch_show_perfile_px")
         st.markdown("---")
         st.markdown("**Per file — totals**")
         # ml/m² per file
