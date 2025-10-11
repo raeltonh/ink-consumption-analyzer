@@ -16,33 +16,7 @@ import xml.etree.ElementTree as ET
 from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
 import streamlit as st
-
-# ---------- Fast/Safe boot block ----------
 import os as _os
-import streamlit as st
-
-SAFE_MODE = (_os.getenv("INK_SAFE", "0") == "1")
-try:
-    _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
-    _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
-    SAFE_MODE = bool(_toggle_val)
-except Exception:
-    pass
-
-def safe_section(title, fn):
-    try:
-        with st.expander(title, expanded=True):
-            fn()
-    except Exception as e:
-        st.error(f"⚠️ {title} falhou: {e}")
-        if st.checkbox(f"Mostrar detalhes ({title})", key=f"tb_{title}"):
-            st.exception(e)
-
-def _mpl():
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
-    return plt, PdfPages
-# ---------- End fast/safe block ----------
 
 
 class _LazyModule(types.ModuleType):
@@ -113,6 +87,30 @@ _icon = _load_asset_image("page_icon") or "🖨️"
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
 st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
+
+# ---------- Fast/Safe boot block ----------
+SAFE_MODE = (_os.getenv("INK_SAFE", "0") == "1")
+try:
+    _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
+    _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
+    SAFE_MODE = bool(_toggle_val)
+except Exception:
+    pass
+
+def safe_section(title, fn):
+    try:
+        with st.expander(title, expanded=True):
+            fn()
+    except Exception as e:
+        st.error(f"⚠️ {title} falhou: {e}")
+        if st.checkbox(f"Mostrar detalhes ({title})", key=f"tb_{title}"):
+            st.exception(e)
+
+def _mpl():
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    return plt, PdfPages
+# ---------- End fast/safe block ----------
 
 # Pillow safety
 Image.MAX_IMAGE_PIXELS = None
