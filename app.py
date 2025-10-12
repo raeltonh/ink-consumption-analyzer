@@ -48,8 +48,14 @@ class _LazyModule(types.ModuleType):
         return self._load()(*args, **kwargs)
 
 # Lazy heavy modules (resolved on demand)
-np = _LazyModule("numpy")
-pd = _LazyModule("pandas")
+try:
+    import numpy as np  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - fallback for minimal environments
+    np = _LazyModule("numpy")
+try:
+    import pandas as pd  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    pd = _LazyModule("pandas")
 Image = _LazyModule("PIL.Image")
 ImageFile = _LazyModule("PIL.ImageFile")
 go = _LazyModule("plotly.graph_objects")
