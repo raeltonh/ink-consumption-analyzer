@@ -2246,12 +2246,12 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
             with st_div("ink-fixed-grid"):
                 st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
     
-        submitted = st.form_submit_button(f"Apply {label}", key=f"{prefix}_apply")
+            submitted = st.form_submit_button(f"Apply {label}")
 
-    if submitted:
-        if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-            sync_mode_scalers_from_prefix(prefix)
-        st.success(f"{label} saved. Now click 'Calculate A and B'.")
+        if submitted:
+            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                sync_mode_scalers_from_prefix(prefix)
+            st.success(f"{label} saved. Now click 'Calculate A and B'.")
 
 # =========================
 # Single PDF — same visual language as A×B
@@ -4095,11 +4095,11 @@ def ui_single():
                 pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
     
-        submitted = st.form_submit_button(f"Apply {label}", key=f"{prefix}_apply")
-    if submitted:
-        if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-            sync_mode_scalers_from_prefix(prefix)
-        st.success(f"{label} saved. Now click 'Calculate'.")
+            submitted = st.form_submit_button(f"Apply {label}")
+        if submitted:
+            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                sync_mode_scalers_from_prefix(prefix)
+            st.success(f"{label} saved. Now click 'Calculate'.")
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
