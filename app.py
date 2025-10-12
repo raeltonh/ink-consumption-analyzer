@@ -89,7 +89,7 @@ DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
 st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
 
 # ---------- Fast/Safe boot block ----------
-SAFE_MODE = (_os.getenv("INK_SAFE", "0") == "1")
+SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
 try:
     _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
     _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
@@ -979,12 +979,12 @@ def fire_pixels_map_from_xml_bytes(xml_bytes: bytes) -> dict:
         out[normalize_sep_name(sep)] = float(px or 0.0)
     return out
 
-def fire_pixels_union_all_xmls(zbytes: bytes) -> dict:
+def fire_pixels_union_all_xmls(zbytes: bytes, cache_ns: str | None = None) -> dict:
     """Sum fire pixels across all XMLs in the ZIP (useful if the selected XML only has FOF/White)."""
     out = {}
-    _, xmls, *_ = read_zip_listing(zbytes)
+    _, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
     for xp in xmls:
-        mp = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xp))
+        mp = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
         for k, v in (mp or {}).items():
             if not k:
                 continue
@@ -1001,22 +1001,22 @@ def has_color_channels(ml_map: dict) -> bool:
             return True
     return False
 
-def ml_map_union_all_xmls(zbytes: bytes) -> dict:
+def ml_map_union_all_xmls(zbytes: bytes, cache_ns: str | None = None) -> dict:
     out = {}
-    files, xmls, *_ = read_zip_listing(zbytes)
+    files, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
     for xp in xmls:
-        mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp))
+        mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
         for k, v in (mm or {}).items():
             if not k:
                 continue
             out[k] = out.get(k, 0.0) + float(v or 0.0)
     return out
-def pick_first_with_colors(zbytes: bytes) -> dict:
+def pick_first_with_colors(zbytes: bytes, cache_ns: str | None = None) -> dict:
     """Return ml/m² map from the first XML in the ZIP that contains any color channel (not just White/FOF)."""
-    _, xmls, *_ = read_zip_listing(zbytes)
+    _, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
     for xp in xmls:
         try:
-            mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp))
+            mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
         except Exception:
             mm = {}
         if has_color_channels(mm):
@@ -1033,20 +1033,81 @@ def strip_appledouble(path: str) -> str:
         return path.rsplit("/",1)[0] + "/" + base[2:] if "/" in path else base[2:]
     return path
 
-@st.cache_data(show_spinner=False)
-def read_zip_listing(zfile_bytes: bytes):
-    with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
-        files = [n for n in z.namelist() if not n.endswith("/")]
-    xmls = [n for n in files if n.lower().endswith(".xml")]
-    jpgs = [n for n in files if n.lower().endswith((".jpg",".jpeg")) and not n.split("/")[-1].startswith("._")]
-    tifs = [n for n in files if n.lower().endswith((".tif",".tiff")) and not n.split("/")[-1].startswith("._")]
-    ad = any(n.split("/")[-1].startswith("._") for n in files)
-    return files, xmls, jpgs, tifs, ad
+def _get_zip_cache(source_bytes: bytes, namespace: str | None = None):
+    """Return a mutable cache bucket for the given ZIP source (persisted in session_state)."""
+    bucket_key = namespace or f"__zip_{id(source_bytes)}"
+    store = st.session_state.setdefault("_zip_cache", {})
+    bucket = store.get(bucket_key)
+    if not bucket or bucket.get("source") is not source_bytes:
+        bucket = {"source": source_bytes, "listing": None, "entries": {}}
+        store[bucket_key] = bucket
+    return bucket
 
-@st.cache_data(show_spinner=False)
-def read_bytes_from_zip(zfile_bytes: bytes, inner_path: str) -> bytes:
-    with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
-        return z.read(inner_path)
+def read_zip_listing(zfile_bytes: bytes, cache_ns: str | None = None):
+    bucket = _get_zip_cache(zfile_bytes, cache_ns)
+    if bucket["listing"] is None:
+        with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
+            files = [n for n in z.namelist() if not n.endswith("/")]
+        xmls = [n for n in files if n.lower().endswith(".xml")]
+        jpgs = [n for n in files if n.lower().endswith((".jpg",".jpeg")) and not n.split("/")[-1].startswith("._")]
+        tifs = [n for n in files if n.lower().endswith((".tif",".tiff")) and not n.split("/")[-1].startswith("._")]
+        ad = any(n.split("/")[-1].startswith("._") for n in files)
+        bucket["listing"] = (files, xmls, jpgs, tifs, ad)
+    return bucket["listing"]
+
+def read_bytes_from_zip(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
+    bucket = _get_zip_cache(zfile_bytes, cache_ns)
+    data_cache = bucket["entries"]
+    if inner_path not in data_cache:
+        with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
+            data_cache[inner_path] = z.read(inner_path)
+    return data_cache[inner_path]
+
+def _get_preview_raw(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
+    raw = read_bytes_from_zip(zfile_bytes, inner_path, cache_ns)
+    if not is_probably_tiff(raw):
+        alt = strip_appledouble(inner_path)
+        if alt != inner_path:
+            try:
+                raw_alt = read_bytes_from_zip(zfile_bytes, alt, cache_ns)
+                if is_probably_tiff(raw_alt):
+                    raw = raw_alt
+            except KeyError:
+                pass
+    return raw
+
+@st.cache_data(max_entries=256, ttl=3600, show_spinner=False)
+def make_preview_thumb(raw_img: bytes, target_w: int, target_h: int, *, fill: bool, trim: bool, max_side: int) -> bytes:
+    """Return a JPEG thumbnail (bytes) ready for st.image rendering."""
+    im = Image.open(io.BytesIO(raw_img))
+    if getattr(im, "n_frames", 1) > 1:
+        try:
+            im.seek(0)
+        except Exception:
+            pass
+    try:
+        bigger = max(im.size)
+        factor = max(1, int(bigger / (max_side * 2)))
+        if factor > 1 and hasattr(im, "reduce"):
+            im = im.reduce(factor)
+    except Exception:
+        pass
+    if im.mode == "P":
+        im = im.convert("RGB")
+    elif im.mode == "1":
+        im = im.convert("L")
+    if trim:
+        im = trim_margins(im)
+    if fill:
+        im = coverbox(im, target_w, target_h)
+    else:
+        im = letterbox(im, target_w, target_h)
+    buf = io.BytesIO()
+    save_kwargs = {"format": "JPEG", "quality": 85, "optimize": True}
+    if im.mode == "RGBA":
+        im = im.convert("RGB")
+    im.save(buf, **save_kwargs)
+    return buf.getvalue()
 
 def letterbox(im: PILImageType, target_w: int, target_h: int, bg=(245,247,251)) -> PILImageType:
     if im.mode not in ("RGB","RGBA","L"):
@@ -1058,17 +1119,8 @@ def letterbox(im: PILImageType, target_w: int, target_h: int, bg=(245,247,251)) 
     canvas.paste(im_copy, (x,y))
     return canvas
 
-@st.cache_data(show_spinner=False)
-def load_preview_light(zfile_bytes: bytes, inner_path: str, max_side: int = 640) -> PILImageType:
-    raw = read_bytes_from_zip(zfile_bytes, inner_path)
-    if not is_probably_tiff(raw):
-        alt = strip_appledouble(inner_path)
-        if alt != inner_path:
-            try:
-                raw_alt = read_bytes_from_zip(zfile_bytes, alt)
-                if is_probably_tiff(raw_alt): raw = raw_alt
-            except KeyError:
-                pass
+def load_preview_light(zfile_bytes: bytes, inner_path: str, max_side: int = 640, cache_ns: str | None = None) -> PILImageType:
+    raw = _get_preview_raw(zfile_bytes, inner_path, cache_ns)
     im = Image.open(io.BytesIO(raw))
     if getattr(im, "n_frames", 1) > 1:
         try: im.seek(0)
@@ -1101,22 +1153,6 @@ def coverbox(im: PILImageType, target_w: int, target_h: int) -> PILImageType:
     y1 = y0 + target_h
     return im_resized.crop((x0, y0, x1, y1))
 
-def _img_to_data_uri(img: PILImageType) -> str:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    b64 = buf.getvalue()
-    import base64
-    return f"data:image/png;base64,{base64.b64encode(b64).decode('ascii')}"
-
-def render_img_box_html(img: PILImageType, w: int, h: int, alt: str = ""):
-    uri = _img_to_data_uri(img)
-    html = f"""
-    <div style="width:{w}px;height:{h}px;overflow:hidden;border-radius:10px;background:#f5f7fb">
-      <img src="{uri}" alt="{alt}" style="width:100%;height:100%;object-fit:cover;display:block;"/>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-
 # Small inline hint icon for headings (native browser tooltip)
 def render_title_with_hint(title_text: str, hint: str):
     safe_title = title_text.replace("<", "&lt;").replace(">", "&gt;")
@@ -1140,7 +1176,7 @@ def plotly_cfg():
 def _reset_heavy_session_state():
     try:
         keys = list(st.session_state.keys())
-        patterns = ["_zip_bytes", "_panels", "_legend", "batch_"]
+        patterns = ["_zip_bytes", "_zip_cache", "_panels", "_legend", "batch_"]
         for k in keys:
             if any(p in k for p in patterns):
                 try:
@@ -1692,12 +1728,12 @@ def run_compare_job(prefix: str, label: str, uploaded_zip_bytes: bytes, sym: str
     # XML do ZIP
     xml_inner_path = st.session_state.get(k_xml)
     if not xml_inner_path:
-        _, xmls, *_ = read_zip_listing(uploaded_zip_bytes)
+        _, xmls, *_ = read_zip_listing(uploaded_zip_bytes, cache_ns=prefix)
         xml_inner_path = xmls[0] if xmls else None
     if not xml_inner_path:
         st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
         return
-    xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path)
+    xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path, cache_ns=prefix)
 
     # Fatores (usa os sliders compartilhados)
     factors = get_mode_factors_from_state()
@@ -1715,7 +1751,7 @@ def run_compare_job(prefix: str, label: str, uploaded_zip_bytes: bytes, sym: str
 
     # Fallback: se a fonte é XML e o mapa tem só White/FOF, tenta primeiro XML com cores
     if str(st.session_state.get(k_cons, "XML (exact)")).lower().startswith("xml") and not has_color_channels(mlmap_use):
-        fb = pick_first_with_colors(uploaded_zip_bytes)
+        fb = pick_first_with_colors(uploaded_zip_bytes, cache_ns=prefix)
         if fb:
             if "mode" in str(st.session_state.get(k_cons, "")).lower():
                 group_key = MODE_GROUP.get(st.session_state.get(k_mode), "")
@@ -2022,12 +2058,12 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
 # =========================
 def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
     """Render inputs for a Compare job (A or B). Extracted from ui_compare_option_b for reuse."""
-    files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes)
+    files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=prefix)
 
     # XML selection
     xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
     xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
-    xml_bytes_hdr = read_bytes_from_zip(zbytes, st.session_state.get(f"{prefix}_xml_sel", xml_sel))
+    xml_bytes_hdr = read_bytes_from_zip(zbytes, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns=prefix)
     w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
 
     # Print mode (lock when XML exact)
@@ -2405,9 +2441,9 @@ def ui_compare_option_b():
             key=f"{prefix}_xml_legend",
         )
         mlm2 = {}
-        mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend))
+        mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix))
         if not has_color_channels(mlm2):
-            fb = pick_first_with_colors(zbytes)
+            fb = pick_first_with_colors(zbytes, cache_ns=prefix)
             if fb:
                 mlm2 = fb
         # guarda para o gráfico global A×B
@@ -2421,23 +2457,19 @@ def ui_compare_option_b():
             path, _ = choose_path(selected_channel, jpgs, chan_map)
             if path:
                 try:
-                    img = load_preview_light(zbytes, path, max_side=int(prev_w * 1.35))
-                    if selected_channel == "Preview":
-                        if bool(st.session_state.get("cmp_fill_preview_jpg", True)):
-                            img = coverbox(img, prev_w, prev_h)
-                            render_img_box_html(img, prev_w, prev_h, alt=path)
-                        else:
-                            img = letterbox(img, prev_w, prev_h)
-                            st.image(img, caption=path, width=prev_w)
-                    else:
-                        if bool(st.session_state.get("cmp_trim_channels", True)):
-                            img = trim_margins(img)
-                        if bool(st.session_state.get("cmp_fill_preview", True)):
-                            img = coverbox(img, prev_w, prev_h)
-                            render_img_box_html(img, prev_w, prev_h, alt=path)
-                        else:
-                            img = letterbox(img, prev_w, prev_h)
-                            st.image(img, caption=path, width=prev_w)
+                    fill_flag = bool(st.session_state.get("cmp_fill_preview_jpg", True)) if selected_channel == "Preview" else bool(st.session_state.get("cmp_fill_preview", True))
+                    trim_flag = bool(st.session_state.get("cmp_trim_channels", True)) if selected_channel != "Preview" else False
+                    with st.spinner("Carregando preview…"):
+                        raw = _get_preview_raw(zbytes, path, cache_ns=prefix)
+                        thumb_bytes = make_preview_thumb(
+                            raw,
+                            prev_w,
+                            prev_h,
+                            fill=fill_flag,
+                            trim=trim_flag,
+                            max_side=int(prev_w * 1.35),
+                        )
+                    st.image(thumb_bytes, caption=path, width=prev_w)
                     if selected_channel != "Preview" and mlm2:
                         v = mlm2.get(selected_channel)
                         if v is not None:
@@ -2485,7 +2517,7 @@ def ui_compare_option_b():
         # --- Fire pixels per channel (K) ---
         pxm2 = {}
         try:
-            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend))
+            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix))
         except Exception:
             pxm2 = {}
 
@@ -2519,7 +2551,7 @@ def ui_compare_option_b():
         # Read original dims from the selected XML
         w0 = h0 = 0.0
         try:
-            xml_bytes_sz = read_bytes_from_zip(zbytes, xml_for_legend)
+            xml_bytes_sz = read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix)
             w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
         except Exception:
             pass
@@ -2956,12 +2988,12 @@ def ui_compare_option_b():
         # XML do ZIP
         xml_inner_path = st.session_state.get(k_xml)
         if not xml_inner_path:
-            _, xmls, *_ = read_zip_listing(uploaded_zip_bytes)
+            _, xmls, *_ = read_zip_listing(uploaded_zip_bytes, cache_ns=prefix)
             xml_inner_path = xmls[0] if xmls else None
         if not xml_inner_path:
             st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
             return
-        xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path)
+        xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path, cache_ns=prefix)
 
         # Fatores (reaproveita os do Single)
         factors = {
@@ -2984,7 +3016,7 @@ def ui_compare_option_b():
         # >>> Fallback: se a fonte selecionada for XML e o mapa tiver só White/FOF,
         # usa o primeiro XML do ZIP que contenha canais de cor (e aplica multiplicadores se for o modo “XML + mode …”)
         if str(st.session_state.get(k_cons, "XML (exact)")).startswith("XML") and not has_color_channels(mlmap_use):
-            fb = pick_first_with_colors(uploaded_zip_bytes)
+            fb = pick_first_with_colors(uploaded_zip_bytes, cache_ns=prefix)
             if fb:
                 if str(st.session_state.get(k_cons)).startswith("XML + mode"):
                     group_key = MODE_GROUP.get(st.session_state.get(k_mode), "").lower()
@@ -3683,7 +3715,7 @@ def ui_single():
             key=prefix_key,
         )
         try:
-            mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend))
+            mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend, cache_ns="single"))
         except Exception:
             mlm2 = {}
         return xml_for_legend, mlm2
@@ -3697,23 +3729,19 @@ def ui_single():
         path, _ = choose_path(st.session_state.get("single_chan_sel", "Preview"), jpgs, chan_map)
         if path:
             try:
-                img = load_preview_light(z, path, max_side=int(prev_w * 1.35))
-                if st.session_state.get("single_chan_sel") == "Preview":
-                    if bool(st.session_state.get("single_fill_preview_jpg", True)):
-                        img = coverbox(img, prev_w, prev_h)
-                        render_img_box_html(img, prev_w, prev_h, alt=path)
-                    else:
-                        img = letterbox(img, prev_w, prev_h)
-                        st.image(img, caption=path, width=prev_w)
-                else:
-                    if bool(st.session_state.get("single_trim_channels", True)):
-                        img = trim_margins(img)
-                    if bool(st.session_state.get("single_fill_preview", True)):
-                        img = coverbox(img, prev_w, prev_h)
-                        render_img_box_html(img, prev_w, prev_h, alt=path)
-                    else:
-                        img = letterbox(img, prev_w, prev_h)
-                        st.image(img, caption=path, width=prev_w)
+                fill_flag = bool(st.session_state.get("single_fill_preview_jpg", True)) if st.session_state.get("single_chan_sel") == "Preview" else bool(st.session_state.get("single_fill_preview", True))
+                trim_flag = bool(st.session_state.get("single_trim_channels", True)) if st.session_state.get("single_chan_sel") != "Preview" else False
+                with st.spinner("Carregando preview…"):
+                    raw = _get_preview_raw(z, path, cache_ns="single")
+                    thumb_bytes = make_preview_thumb(
+                        raw,
+                        prev_w,
+                        prev_h,
+                        fill=fill_flag,
+                        trim=trim_flag,
+                        max_side=int(prev_w * 1.35),
+                    )
+                st.image(thumb_bytes, caption=path, width=prev_w)
                 sel = st.session_state.get("single_chan_sel")
                 if sel != "Preview" and mlm2:
                     v = mlm2.get(sel)
@@ -3762,7 +3790,7 @@ def ui_single():
             "K pixels fired per channel, from NumberOfFirePixelsPerSeparation in the XML."
         )
         try:
-            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend))
+            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend, cache_ns="single"))
         except Exception:
             pxm2 = {}
         if pxm2:
@@ -3784,7 +3812,7 @@ def ui_single():
     # Get XML original dimensions
     w0 = h0 = 0.0
     try:
-        xml_bytes_sz = read_bytes_from_zip(z, xml_for_legend)
+        xml_bytes_sz = read_bytes_from_zip(z, xml_for_legend, cache_ns="single")
         w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
     except Exception:
         pass
@@ -3921,10 +3949,10 @@ def ui_single():
 
     # ---------- Job — Inputs (Apply), placed right below charts ----------
     def job_inputs_single(prefix: str, label: str):
-        files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z)
+        files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z, cache_ns="single")
         xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
         xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
-        xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel))
+        xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
         w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
 
         auto_mode = infer_mode_from_xml(xml_bytes_hdr)
@@ -4088,12 +4116,12 @@ def ui_single():
 
         xml_inner_path = st.session_state.get(f"{prefix}_xml_sel")
         if not xml_inner_path:
-            _, xmls_i, *_ = read_zip_listing(z)
+            _, xmls_i, *_ = read_zip_listing(z, cache_ns="single")
             xml_inner_path = xmls_i[0] if xmls_i else None
         if not xml_inner_path:
             st.session_state["single_panels"] = {"error": "No XML in ZIP."}
             return
-        xml_bytes = read_bytes_from_zip(z, xml_inner_path)
+        xml_bytes = read_bytes_from_zip(z, xml_inner_path, cache_ns="single")
 
         factors = get_mode_factors_from_state()
 
@@ -4317,8 +4345,10 @@ def ui_compare():
         return
 
     # Listagem de conteúdo
-    filesA, xmlsA, jpgsA, tifsA, adA = read_zip_listing(zipA.getvalue())
-    filesB, xmlsB, jpgsB, tifsB, adB = read_zip_listing(zipB.getvalue())
+    zipA_bytes = zipA.getvalue()
+    zipB_bytes = zipB.getvalue()
+    filesA, xmlsA, jpgsA, tifsA, adA = read_zip_listing(zipA_bytes, cache_ns="cmpA")
+    filesB, xmlsB, jpgsB, tifsB, adB = read_zip_listing(zipB_bytes, cache_ns="cmpB")
     mA1, mA2, mA3, mB1, mB2, mB3 = st.columns(6)
     mA1.metric("A — XML", len(xmlsA)); mA2.metric("A — JPG", len(jpgsA)); mA3.metric("A — TIFF", len(tifsA))
     mB1.metric("B — XML", len(xmlsB)); mB2.metric("B — JPG", len(jpgsB)); mB3.metric("B — TIFF", len(tifsB))
@@ -4336,22 +4366,22 @@ def ui_compare():
     with jbA:
         st.subheader("Job A")
         xmlA = st.selectbox("XML (A)", xmlsA, index=0, key="cmp_xml_A")
-        xmlA_bytes = read_bytes_from_zip(zipA.getvalue(), xmlA)
+        xmlA_bytes = read_bytes_from_zip(zipA_bytes, xmlA, cache_ns="cmpA")
         mlm2A = ml_per_m2_from_xml_bytes(xmlA_bytes) or {}
         wA_xml, hA_xml, areaA_xml_m2 = get_xml_dims_m(xmlA_bytes)
 
     with jbB:
         st.subheader("Job B")
         xmlB = st.selectbox("XML (B)", xmlsB, index=0, key="cmp_xml_B")
-        xmlB_bytes = read_bytes_from_zip(zipB.getvalue(), xmlB)
+        xmlB_bytes = read_bytes_from_zip(zipB_bytes, xmlB, cache_ns="cmpB")
         mlm2B = ml_per_m2_from_xml_bytes(xmlB_bytes) or {}
         wB_xml, hB_xml, areaB_xml_m2 = get_xml_dims_m(xmlB_bytes)
 
     # --- FALLBACK (A × B): se o XML escolhido só tem White/FOF, somar todos os XMLs do ZIP
     if not has_color_channels(mlm2A):
-        mlm2A = ml_map_union_all_xmls(zipA.getvalue())
+        mlm2A = ml_map_union_all_xmls(zipA_bytes, cache_ns="cmpA")
     if not has_color_channels(mlm2B):
-        mlm2B = ml_map_union_all_xmls(zipB.getvalue())
+        mlm2B = ml_map_union_all_xmls(zipB_bytes, cache_ns="cmpB")
 
     # Pixels (por Selected XML)
     pxA = fire_pixels_map_from_xml_bytes(xmlA_bytes)
@@ -4359,9 +4389,9 @@ def ui_compare():
 
     # --- FALLBACK para pixels: se só houver White/FOF, somar os pixels de todos os XMLs do ZIP
     if not has_color_channels(pxA):
-        pxA = fire_pixels_union_all_xmls(zipA.getvalue())
+        pxA = fire_pixels_union_all_xmls(zipA_bytes, cache_ns="cmpA")
     if not has_color_channels(pxB):
-        pxB = fire_pixels_union_all_xmls(zipB.getvalue())
+        pxB = fire_pixels_union_all_xmls(zipB_bytes, cache_ns="cmpB")
 
     # ---------- Mapas de TIFF por canal (para preview)
     chan_mapA, chan_mapB = {}, {}
@@ -4450,14 +4480,22 @@ def ui_compare():
     st.markdown(" ")
     colL, colR = st.columns(2)
 
-    def render_side(label, zip_file, jpgs, chan_map, ml_map, px_map, ch, preview_w=560, preview_h=460):
+    def render_side(label, zip_bytes, jpgs, chan_map, ml_map, px_map, ch, preview_w=560, preview_h=460, cache_ns="cmpA"):
         st.markdown(f"**Selected ({label})**: {ch}")
         path, _ = choose_path(ch, jpgs, chan_map)
         if path:
             try:
-                img = load_preview_light(zip_file.getvalue(), path, max_side=int(preview_w*1.35))
-                img = letterbox(img, preview_w, preview_h)
-                st.image(img, caption=path, width=preview_w)
+                with st.spinner("Carregando preview…"):
+                    raw = _get_preview_raw(zip_bytes, path, cache_ns=cache_ns)
+                    thumb_bytes = make_preview_thumb(
+                        raw,
+                        preview_w,
+                        preview_h,
+                        fill=False,
+                        trim=False,
+                        max_side=int(preview_w * 1.35),
+                    )
+                st.image(thumb_bytes, caption=path, width=preview_w)
             except Exception as e:
                 st.info(f"{label}: preview unavailable ({e})")
         else:
@@ -4496,15 +4534,17 @@ def ui_compare():
 
     with colL:
             render_side(
-                "Job A", zipA, jpgsA, chan_mapA, mlm2A, pxA, sel_ch,
+                "Job A", zipA_bytes, jpgsA, chan_mapA, mlm2A, pxA, sel_ch,
                 preview_w=st.session_state.get("cmp_prev_w", 560),
                 preview_h=st.session_state.get("cmp_prev_h", 460),
+                cache_ns="cmpA",
             )
     with colR:
         render_side(
-            "Job B", zipB, jpgsB, chan_mapB, mlm2B, pxB, sel_ch,
+            "Job B", zipB_bytes, jpgsB, chan_mapB, mlm2B, pxB, sel_ch,
             preview_w=st.session_state.get("cmp_prev_w", 560),
             preview_h=st.session_state.get("cmp_prev_h", 460),
+            cache_ns="cmpB",
         )
 
     # ---------- Simulação de custos & BEP (A×B)
@@ -5037,20 +5077,21 @@ def ui_batch():
             except Exception:
                 zbytes = up.read() if hasattr(up, 'read') else None
             name = getattr(up, 'name', 'job.zip')
-        files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes)
+        cache_ns = f"batch_{name}"
+        files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=cache_ns)
         if not xmls:
             rows.append({"File": name, "Status": "No XML in ZIP"})
             continue
         # Pick XML: prefer first with colors
         picked_ml = None; picked_xml = xmls[0]
         for xp in xmls:
-            raw = read_bytes_from_zip(zbytes, xp)
+            raw = read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns)
             mm = ml_per_m2_from_xml_bytes(raw)
             if has_color_channels(mm):
                 picked_ml = mm; picked_xml = xp; break
         if picked_ml is None:
-            picked_ml = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, picked_xml))
-        xml_bytes = read_bytes_from_zip(zbytes, picked_xml)
+            picked_ml = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, picked_xml, cache_ns=cache_ns))
+        xml_bytes = read_bytes_from_zip(zbytes, picked_xml, cache_ns=cache_ns)
 
         # Apply source/multipliers
         mode_auto = infer_mode_from_xml(xml_bytes)
