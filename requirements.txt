@@ -4,3 +4,4 @@ numpy==1.26.4
 pillow==10.3.0
 plotly==5.22.0
 matplotlib==3.8.4
+pypdfium2==4.20.0

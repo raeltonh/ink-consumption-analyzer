@@ -11,7 +11,7 @@ import unicodedata
 def _deaccent(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
 
-import io, re, math, zipfile, warnings, datetime as dt, textwrap
+import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
@@ -1039,35 +1039,31 @@ def strip_appledouble(path: str) -> str:
         return path.rsplit("/",1)[0] + "/" + base[2:] if "/" in path else base[2:]
     return path
 
-def _get_zip_cache(source_bytes: bytes, namespace: str | None = None):
-    """Return a mutable cache bucket for the given ZIP source (persisted in session_state)."""
-    bucket_key = namespace or f"__zip_{id(source_bytes)}"
-    store = st.session_state.setdefault("_zip_cache", {})
-    bucket = store.get(bucket_key)
-    if not bucket or bucket.get("source") is not source_bytes:
-        bucket = {"source": source_bytes, "listing": None, "entries": {}}
-        store[bucket_key] = bucket
-    return bucket
+def _zip_digest(zbytes: bytes) -> str:
+    return hashlib.sha1(zbytes).hexdigest()
+
+@st.cache_data(max_entries=128, ttl=3600, show_spinner=False)
+def _cached_zip_listing(zip_key: str, zbytes: bytes):
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        files = [n for n in z.namelist() if not n.endswith("/")]
+    xmls = [n for n in files if n.lower().endswith(".xml")]
+    jpgs = [n for n in files if n.lower().endswith((".jpg",".jpeg")) and not n.split("/")[-1].startswith("._")]
+    tifs = [n for n in files if n.lower().endswith((".tif",".tiff")) and not n.split("/")[-1].startswith("._")]
+    ad = any(n.split("/")[-1].startswith("._") for n in files)
+    return files, xmls, jpgs, tifs, ad
 
 def read_zip_listing(zfile_bytes: bytes, cache_ns: str | None = None):
-    bucket = _get_zip_cache(zfile_bytes, cache_ns)
-    if bucket["listing"] is None:
-        with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
-            files = [n for n in z.namelist() if not n.endswith("/")]
-        xmls = [n for n in files if n.lower().endswith(".xml")]
-        jpgs = [n for n in files if n.lower().endswith((".jpg",".jpeg")) and not n.split("/")[-1].startswith("._")]
-        tifs = [n for n in files if n.lower().endswith((".tif",".tiff")) and not n.split("/")[-1].startswith("._")]
-        ad = any(n.split("/")[-1].startswith("._") for n in files)
-        bucket["listing"] = (files, xmls, jpgs, tifs, ad)
-    return bucket["listing"]
+    key = f"{cache_ns or 'zip'}_{_zip_digest(zfile_bytes)}"
+    return _cached_zip_listing(key, zfile_bytes)
+
+@st.cache_data(max_entries=512, ttl=3600, show_spinner=False)
+def _cached_zip_entry(zip_key: str, inner_path: str, zbytes: bytes) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        return z.read(inner_path)
 
 def read_bytes_from_zip(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
-    bucket = _get_zip_cache(zfile_bytes, cache_ns)
-    data_cache = bucket["entries"]
-    if inner_path not in data_cache:
-        with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
-            data_cache[inner_path] = z.read(inner_path)
-    return data_cache[inner_path]
+    key = f"{cache_ns or 'zip'}_{_zip_digest(zfile_bytes)}"
+    return _cached_zip_entry(key, inner_path, zfile_bytes)
 
 def _get_preview_raw(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
     raw = read_bytes_from_zip(zfile_bytes, inner_path, cache_ns)
@@ -1114,6 +1110,26 @@ def make_preview_thumb(raw_img: bytes, target_w: int, target_h: int, *, fill: bo
         im = im.convert("RGB")
     im.save(buf, **save_kwargs)
     return buf.getvalue()
+
+@st.experimental_fragment
+def preview_fragment(fragment_key: str, zip_bytes: bytes | None, inner_path: str | None, *, width: int, height: int, fill_flag: bool, trim_flag: bool, max_side: int, caption: str):
+    if not zip_bytes or not inner_path:
+        st.info("Preview unavailable for this selection.")
+        return
+    try:
+        with st.spinner("Carregando preview…"):
+            raw = _get_preview_raw(zip_bytes, inner_path, cache_ns=fragment_key)
+            thumb_bytes = make_preview_thumb(
+                raw,
+                width,
+                height,
+                fill=fill_flag,
+                trim=trim_flag,
+                max_side=max_side,
+            )
+        st.image(thumb_bytes, caption=caption, width=width)
+    except Exception as exc:
+        st.error(f"Preview failed: {exc}")
 
 def letterbox(im: PILImageType, target_w: int, target_h: int, bg=(245,247,251)) -> PILImageType:
     if im.mode not in ("RGB","RGBA","L"):
@@ -1182,7 +1198,7 @@ def plotly_cfg():
 def _reset_heavy_session_state():
     try:
         keys = list(st.session_state.keys())
-        patterns = ["_zip_bytes", "_zip_cache", "_panels", "_legend", "batch_"]
+        patterns = ["_zip_bytes", "_panels", "_legend", "batch_"]
         for k in keys:
             if any(p in k for p in patterns):
                 try:
@@ -2065,171 +2081,174 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
 def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
     """Render inputs for a Compare job (A or B). Extracted from ui_compare_option_b for reuse."""
     files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=prefix)
-
-    # XML selection
-    xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
-    xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
-    xml_bytes_hdr = read_bytes_from_zip(zbytes, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns=prefix)
-    w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
-
-    # Print mode (lock when XML exact)
-    auto_mode = infer_mode_from_xml(xml_bytes_hdr)
-    white_in = has_white_in_xml(xml_bytes_hdr)
-    PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
-    # Resolve a safe default mode key
-    mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-    idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
-
-    # Consumption source first, so we can decide whether to lock the print mode
-    cons_src = st.radio(
-        "Consumption source (ml/m²)",
-        ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
-        index=0,
-        key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
-    )
-
-    lock_mode = str(cons_src).startswith("XML (exact)")
-    # Ensure session state holds a valid option; otherwise Streamlit shows "Choose an option"
-    if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
-        st.session_state[f"{prefix}_mode_sel"] = mode_default
-
-    mode_sel = st.selectbox(
-        "Print mode",
-        PRINT_MODE_OPTIONS,
-        index=idx_mode,
-        key=f"{prefix}_mode_sel",
-        format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
-        disabled=lock_mode,
-        help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
-    )
-    # Safe effective mode (avoid KeyError when widget returns None)
-    # Effective mode with robust fallback
-    mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
-    mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-    if mode_for_caption in PRINT_MODES:
-        st.caption(
-            f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**"
+    submitted = False
+    with st.form(key=f"{prefix}_form"):
+    
+        # XML selection
+        xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
+        xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
+        xml_bytes_hdr = read_bytes_from_zip(zbytes, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns=prefix)
+        w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
+    
+        # Print mode (lock when XML exact)
+        auto_mode = infer_mode_from_xml(xml_bytes_hdr)
+        white_in = has_white_in_xml(xml_bytes_hdr)
+        PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
+        # Resolve a safe default mode key
+        mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+        idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
+    
+        # Consumption source first, so we can decide whether to lock the print mode
+        cons_src = st.radio(
+            "Consumption source (ml/m²)",
+            ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
+            index=0,
+            key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
         )
-    # Resolution caption — fall back to mode_for_caption when auto inference is unavailable
-    res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
-    if res_key in PRINT_MODES:
-        st.caption(
-            f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**"
+    
+        lock_mode = str(cons_src).startswith("XML (exact)")
+        # Ensure session state holds a valid option; otherwise Streamlit shows "Choose an option"
+        if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
+            st.session_state[f"{prefix}_mode_sel"] = mode_default
+    
+        mode_sel = st.selectbox(
+            "Print mode",
+            PRINT_MODE_OPTIONS,
+            index=idx_mode,
+            key=f"{prefix}_mode_sel",
+            format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
+            disabled=lock_mode,
+            help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
         )
-
-    # Geometry & waste
-    with st_div("ink-fixed-grid"):
-        a1, a2, a3 = st.columns(3)
-        a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m",
-                        help="Printable width used for this job.")
-        a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m",
-                        help="Length to be produced for this job.")
-        a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste",
-                        help="Allowance for setup, trims and reprints.")
-
-    # Details for source
-    if cons_src.startswith("XML + mode multiplier"):
-        st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
-        render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
-    elif cons_src == "Manual":
-        with st_div("ink-fixed-grid"):
-            mcols = st.columns(3)
-            mcols[0].number_input(
-            f"Manual — Color (ml{per_unit('m2')})",
-            value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-            min_value=0.0, step=0.1, key=f"{prefix}_man_c"
-        )
-            mcols[1].number_input(
-            f"Manual — White (ml{per_unit('m2')})",
-            value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-            min_value=0.0, step=0.1, key=f"{prefix}_man_w"
-        )
-            mcols[2].number_input(
-            f"Manual — FOF (ml{per_unit('m2')})",
-            value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-            min_value=0.0, step=0.1, key=f"{prefix}_man_f"
-        )
-
-    # Variable labor + other variables
-    lab1, _ = st.columns([1,1])
-    lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h",
-                      help="Hourly variable labor. Do not use if it is already included in monthly fixed costs.")
-    st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
-    _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
-    df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
-    st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
-
-    # Fixed costs & pricing
-    fix_mode = st.radio(
-        "Fixed costs mode",
-        ["Direct per unit", "Monthly helper"],
-        index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1,
-        horizontal=True,
-        key=f"{prefix}_fix_mode",
-        help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.",
-    )
-    if fix_mode.startswith("Direct"):
-        with st_div("ink-fixed-grid"):
-            mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-            mv1.number_input(
-                f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
-                min_value=0.0,
-                value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
-                step=0.05,
-                key=f"{prefix}_fixed_unit",
-                help="Fixed cost per unit if not using the monthly helper.",
+        # Safe effective mode (avoid KeyError when widget returns None)
+        # Effective mode with robust fallback
+        mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
+        mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+        if mode_for_caption in PRINT_MODES:
+            st.caption(
+                f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**"
             )
-            mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price",
-                             help="Selling price per unit in the chosen unit.")
-            mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin",
-                             help="Target markup over cost before taxes and fees.")
-            mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax",
-                             help="Taxes or withholdings applied to price.")
-            mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms",
-                             help="Payment terms, card fees, financing, etc.")
-        # Round to — keep within grid styling to align labels across A & B
+        # Resolution caption — fall back to mode_for_caption when auto inference is unavailable
+        res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
+        if res_key in PRINT_MODES:
+            st.caption(
+                f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**"
+            )
+    
+        # Geometry & waste
         with st_div("ink-fixed-grid"):
-            rcol = st.columns(1)[0]
-            rcol.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round",
-                            help="Rounding step for suggested price.")
-    else:
-        st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
-        with st_div("ink-fixed-grid"):
-            fx1, fx2, fx3, fx4 = st.columns(4)
-            fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
-            fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
-            fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
-            fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
-        st.caption("Other fixed (monthly)")
-        _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
-        df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
-        st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
-        # Monthly production helper
-        prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
-        # Allocation
-        sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
-        total_fix_m = (
-            float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
-            + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
-            + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
-            + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
-            + float(sum_others)
+            a1, a2, a3 = st.columns(3)
+            a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m",
+                            help="Printable width used for this job.")
+            a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m",
+                            help="Length to be produced for this job.")
+            a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste",
+                            help="Allowance for setup, trims and reprints.")
+    
+        # Details for source
+        if cons_src.startswith("XML + mode multiplier"):
+            st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
+            render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
+        elif cons_src == "Manual":
+            with st_div("ink-fixed-grid"):
+                mcols = st.columns(3)
+                mcols[0].number_input(
+                f"Manual — Color (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_c"
+            )
+                mcols[1].number_input(
+                f"Manual — White (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_w"
+            )
+                mcols[2].number_input(
+                f"Manual — FOF (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_f"
+            )
+    
+        # Variable labor + other variables
+        lab1, _ = st.columns([1,1])
+        lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h",
+                          help="Hourly variable labor. Do not use if it is already included in monthly fixed costs.")
+        st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
+        _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
+        df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
+        st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
+    
+        # Fixed costs & pricing
+        fix_mode = st.radio(
+            "Fixed costs mode",
+            ["Direct per unit", "Monthly helper"],
+            index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1,
+            horizontal=True,
+            key=f"{prefix}_fix_mode",
+            help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.",
         )
-        alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
-        st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
-        st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
-        # Pricing controls
-        with st_div("ink-fixed-grid"):
-            pv2, pv3, pv4, pv5 = st.columns(4)
-            pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
-            pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
-            pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
-            pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
-        with st_div("ink-fixed-grid"):
-            st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
+        if fix_mode.startswith("Direct"):
+            with st_div("ink-fixed-grid"):
+                mv1, mv2, mv3, mv4, mv5 = st.columns(5)
+                mv1.number_input(
+                    f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
+                    min_value=0.0,
+                    value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
+                    step=0.05,
+                    key=f"{prefix}_fixed_unit",
+                    help="Fixed cost per unit if not using the monthly helper.",
+                )
+                mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price",
+                                 help="Selling price per unit in the chosen unit.")
+                mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin",
+                                 help="Target markup over cost before taxes and fees.")
+                mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax",
+                                 help="Taxes or withholdings applied to price.")
+                mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms",
+                                 help="Payment terms, card fees, financing, etc.")
+            # Round to — keep within grid styling to align labels across A & B
+            with st_div("ink-fixed-grid"):
+                rcol = st.columns(1)[0]
+                rcol.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round",
+                                help="Rounding step for suggested price.")
+        else:
+            st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
+            with st_div("ink-fixed-grid"):
+                fx1, fx2, fx3, fx4 = st.columns(4)
+                fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
+                fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
+                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
+                fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
+            st.caption("Other fixed (monthly)")
+            _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+            df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
+            st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
+            # Monthly production helper
+            prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
+            # Allocation
+            sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
+            total_fix_m = (
+                float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
+                + float(sum_others)
+            )
+            alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
+            st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
+            st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
+            # Pricing controls
+            with st_div("ink-fixed-grid"):
+                pv2, pv3, pv4, pv5 = st.columns(4)
+                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
+                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
+                pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
+                pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
+            with st_div("ink-fixed-grid"):
+                st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
+    
+        submitted = st.form_submit_button(f"Apply {label}", key=f"{prefix}_apply")
 
-    applied = st.button(f"Apply {label}", key=f"{prefix}_apply")
-    if applied:
+    if submitted:
         if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
             sync_mode_scalers_from_prefix(prefix)
         st.success(f"{label} saved. Now click 'Calculate A and B'.")
@@ -2461,31 +2480,25 @@ def ui_compare_option_b():
         leftC, rightC = st.columns([1.15, 1.0])
         with leftC:
             path, _ = choose_path(selected_channel, jpgs, chan_map)
-            if path:
-                try:
-                    fill_flag = bool(st.session_state.get("cmp_fill_preview_jpg", True)) if selected_channel == "Preview" else bool(st.session_state.get("cmp_fill_preview", True))
-                    trim_flag = bool(st.session_state.get("cmp_trim_channels", True)) if selected_channel != "Preview" else False
-                    with st.spinner("Carregando preview…"):
-                        raw = _get_preview_raw(zbytes, path, cache_ns=prefix)
-                        thumb_bytes = make_preview_thumb(
-                            raw,
-                            prev_w,
-                            prev_h,
-                            fill=fill_flag,
-                            trim=trim_flag,
-                            max_side=int(prev_w * 1.35),
-                        )
-                    st.image(thumb_bytes, caption=path, width=prev_w)
-                    if selected_channel != "Preview" and mlm2:
-                        v = mlm2.get(selected_channel)
-                        if v is not None:
-                            st.caption(f"**{selected_channel}**: {v:.2f} ml/m²")
-                    if mlm2:
-                        st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
-                except Exception as e:
-                    st.error(f"Preview failed: {e}")
-            else:
-                st.info(f"This job does not contain '{selected_channel}'.")
+            fill_flag = bool(st.session_state.get("cmp_fill_preview_jpg", True)) if selected_channel == "Preview" else bool(st.session_state.get("cmp_fill_preview", True))
+            trim_flag = bool(st.session_state.get("cmp_trim_channels", True)) if selected_channel != "Preview" else False
+            preview_fragment(
+                f"{prefix}_preview",
+                zbytes,
+                path,
+                width=prev_w,
+                height=prev_h,
+                fill_flag=fill_flag,
+                trim_flag=trim_flag,
+                max_side=int(prev_w * 1.35),
+                caption=path or "Preview",
+            )
+            if selected_channel != "Preview" and mlm2:
+                v = mlm2.get(selected_channel)
+                if v is not None:
+                    st.caption(f"**{selected_channel}**: {v:.2f} ml/m²")
+            if mlm2:
+                st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
         with rightC:
             st.empty()
 
@@ -3734,29 +3747,26 @@ def ui_single():
     with leftC:
         path, _ = choose_path(st.session_state.get("single_chan_sel", "Preview"), jpgs, chan_map)
         if path:
-            try:
-                fill_flag = bool(st.session_state.get("single_fill_preview_jpg", True)) if st.session_state.get("single_chan_sel") == "Preview" else bool(st.session_state.get("single_fill_preview", True))
-                trim_flag = bool(st.session_state.get("single_trim_channels", True)) if st.session_state.get("single_chan_sel") != "Preview" else False
-                with st.spinner("Carregando preview…"):
-                    raw = _get_preview_raw(z, path, cache_ns="single")
-                    thumb_bytes = make_preview_thumb(
-                        raw,
-                        prev_w,
-                        prev_h,
-                        fill=fill_flag,
-                        trim=trim_flag,
-                        max_side=int(prev_w * 1.35),
-                    )
-                st.image(thumb_bytes, caption=path, width=prev_w)
-                sel = st.session_state.get("single_chan_sel")
-                if sel != "Preview" and mlm2:
-                    v = mlm2.get(sel)
-                    if v is not None:
-                        st.caption(f"**{sel}**: {v:.2f} ml/m²")
-                if mlm2:
-                    st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
-            except Exception as e:
-                st.error(f"Preview failed: {e}")
+            fill_flag = bool(st.session_state.get("single_fill_preview_jpg", True)) if st.session_state.get("single_chan_sel") == "Preview" else bool(st.session_state.get("single_fill_preview", True))
+            trim_flag = bool(st.session_state.get("single_trim_channels", True)) if st.session_state.get("single_chan_sel") != "Preview" else False
+            preview_fragment(
+                "single_preview",
+                z,
+                path,
+                width=prev_w,
+                height=prev_h,
+                fill_flag=fill_flag,
+                trim_flag=trim_flag,
+                max_side=int(prev_w * 1.35),
+                caption=path,
+            )
+            sel = st.session_state.get("single_chan_sel")
+            if sel != "Preview" and mlm2:
+                v = mlm2.get(sel)
+                if v is not None:
+                    st.caption(f"**{sel}**: {v:.2f} ml/m²")
+            if mlm2:
+                st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
         else:
             st.info(f"This job does not contain '{st.session_state.get('single_chan_sel')}'.")
     with rightC:
@@ -3956,137 +3966,140 @@ def ui_single():
     # ---------- Job — Inputs (Apply), placed right below charts ----------
     def job_inputs_single(prefix: str, label: str):
         files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z, cache_ns="single")
-        xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
-        xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
-        xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
-        w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
-
-        auto_mode = infer_mode_from_xml(xml_bytes_hdr)
-        white_in = has_white_in_xml(xml_bytes_hdr)
-        PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
-        mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-        idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
-
-        # Source first to decide locking
-        cons_src = st.radio(
-            "Consumption source (ml/m²)",
-            ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
-            index=0,
-            key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
-        )
-        lock_mode = str(cons_src).startswith("XML (exact)")
-        # Ensure valid selection to avoid "Choose an option" disabled selectbox
-        if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
-            st.session_state[f"{prefix}_mode_sel"] = mode_default
-
-        mode_sel = st.selectbox(
-            "Print mode",
-            PRINT_MODE_OPTIONS,
-            index=idx_mode,
-            key=f"{prefix}_mode_sel",
-            format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
-            disabled=lock_mode,
-            help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
-        )
-        mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
-        mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-        if mode_for_caption in PRINT_MODES:
-            st.caption(f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**")
-        res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
-        if res_key in PRINT_MODES:
-            st.caption(f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**")
-
-        a1, a2, a3 = st.columns(3)
-        a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m", help="Printable width used for this job.")
-        a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m", help="Length to be produced for this job.")
-        a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste", help="Allowance for setup, trims and reprints.")
-        # Details for source
-        if cons_src.startswith("XML + mode multiplier"):
-            st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
-            # Inline per-mode scalers (Single) — use unique keys and sync to shared
-            render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
-        elif cons_src == "Manual":
-            mcols = st.columns(3)
-            mcols[0].number_input(
-                f"Manual — Color (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_c"
+        submitted = False
+        with st.form(key=f"{prefix}_form"):
+            xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
+            xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
+            xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
+            w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
+    
+            auto_mode = infer_mode_from_xml(xml_bytes_hdr)
+            white_in = has_white_in_xml(xml_bytes_hdr)
+            PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
+            mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+            idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
+    
+            # Source first to decide locking
+            cons_src = st.radio(
+                "Consumption source (ml/m²)",
+                ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
+                index=0,
+                key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
             )
-            mcols[1].number_input(
-                f"Manual — White (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_w"
+            lock_mode = str(cons_src).startswith("XML (exact)")
+            # Ensure valid selection to avoid "Choose an option" disabled selectbox
+            if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
+                st.session_state[f"{prefix}_mode_sel"] = mode_default
+    
+            mode_sel = st.selectbox(
+                "Print mode",
+                PRINT_MODE_OPTIONS,
+                index=idx_mode,
+                key=f"{prefix}_mode_sel",
+                format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
+                disabled=lock_mode,
+                help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
             )
-            mcols[2].number_input(
-                f"Manual — FOF (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_f"
-            )
-
-
-        lab1, _ = st.columns([1,1])
-        lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h", help="Hourly variable labor. Do not use if already included in monthly fixed costs.")
-
-        st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
-        _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
-        df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
-        st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
-
-        fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
-
-        if fix_mode.startswith("Direct"):
-            with st_div("ink-fixed-grid"):
-                mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-                mv1.number_input(
-                    f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
-                    min_value=0.0,
-                    value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
-                    step=0.05,
-                    key=f"{prefix}_fixed_unit",
-                    help="Fixed cost per unit if not using the monthly helper.")
-                mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price", help="Selling price per unit.")
-                mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin", help="Target markup over cost before taxes and fees.")
-                mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax", help="Taxes or withholdings applied to price.")
-                mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms", help="Payment terms, card fees, financing, etc.")
+            mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
+            mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+            if mode_for_caption in PRINT_MODES:
+                st.caption(f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**")
+            res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
+            if res_key in PRINT_MODES:
+                st.caption(f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**")
+    
+            a1, a2, a3 = st.columns(3)
+            a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m", help="Printable width used for this job.")
+            a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m", help="Length to be produced for this job.")
+            a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste", help="Allowance for setup, trims and reprints.")
+            # Details for source
+            if cons_src.startswith("XML + mode multiplier"):
+                st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
+                # Inline per-mode scalers (Single) — use unique keys and sync to shared
+                render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
+            elif cons_src == "Manual":
+                mcols = st.columns(3)
+                mcols[0].number_input(
+                    f"Manual — Color (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
+                    min_value=0.0, step=0.1, key=f"{prefix}_man_c"
+                )
+                mcols[1].number_input(
+                    f"Manual — White (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
+                    min_value=0.0, step=0.1, key=f"{prefix}_man_w"
+                )
+                mcols[2].number_input(
+                    f"Manual — FOF (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
+                    min_value=0.0, step=0.1, key=f"{prefix}_man_f"
+                )
+    
+    
+            lab1, _ = st.columns([1,1])
+            lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h", help="Hourly variable labor. Do not use if already included in monthly fixed costs.")
+    
+            st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
+            _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
+            df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
+            st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
+    
+            fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
+    
+            if fix_mode.startswith("Direct"):
+                with st_div("ink-fixed-grid"):
+                    mv1, mv2, mv3, mv4, mv5 = st.columns(5)
+                    mv1.number_input(
+                        f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
+                        min_value=0.0,
+                        value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
+                        step=0.05,
+                        key=f"{prefix}_fixed_unit",
+                        help="Fixed cost per unit if not using the monthly helper.")
+                    mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price", help="Selling price per unit.")
+                    mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin", help="Target markup over cost before taxes and fees.")
+                    mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax", help="Taxes or withholdings applied to price.")
+                    mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms", help="Payment terms, card fees, financing, etc.")
+                    st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
+            else:
+                st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
+                fx1, fx2, fx3, fx4 = st.columns(4)
+                fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
+                fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
+                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
+                fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
+    
+                st.caption("Other fixed (monthly)")
+                _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+                df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
+                st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
+    
+                prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
+    
+                sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
+                total_fix_m = (
+                    float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
+                    + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
+                    + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
+                    + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
+                    + float(sum_others)
+                )
+                alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
+                st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
+                st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
+    
+                pv2, pv3, pv4, pv5 = st.columns(4)
+                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
+                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
+                pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
+                pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-        else:
-            st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
-            fx1, fx2, fx3, fx4 = st.columns(4)
-            fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
-            fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
-            fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
-            fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
-
-            st.caption("Other fixed (monthly)")
-            _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
-            df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
-            st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
-
-            prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
-
-            sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
-            total_fix_m = (
-                float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
-                + float(sum_others)
-            )
-            alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
-            st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
-            st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
-
-            pv2, pv3, pv4, pv5 = st.columns(4)
-            pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
-            pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
-            pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
-            pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
-            st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-
-        if st.button(f"Apply {label}", key=f"{prefix}_apply"):
-            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                sync_mode_scalers_from_prefix(prefix)
-            st.success(f"{label} saved. Now click 'Calculate'.")
+    
+        submitted = st.form_submit_button(f"Apply {label}", key=f"{prefix}_apply")
+    if submitted:
+        if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+            sync_mode_scalers_from_prefix(prefix)
+        st.success(f"{label} saved. Now click 'Calculate'.")
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
@@ -4489,23 +4502,17 @@ def ui_compare():
     def render_side(label, zip_bytes, jpgs, chan_map, ml_map, px_map, ch, preview_w=560, preview_h=460, cache_ns="cmpA"):
         st.markdown(f"**Selected ({label})**: {ch}")
         path, _ = choose_path(ch, jpgs, chan_map)
-        if path:
-            try:
-                with st.spinner("Carregando preview…"):
-                    raw = _get_preview_raw(zip_bytes, path, cache_ns=cache_ns)
-                    thumb_bytes = make_preview_thumb(
-                        raw,
-                        preview_w,
-                        preview_h,
-                        fill=False,
-                        trim=False,
-                        max_side=int(preview_w * 1.35),
-                    )
-                st.image(thumb_bytes, caption=path, width=preview_w)
-            except Exception as e:
-                st.info(f"{label}: preview unavailable ({e})")
-        else:
-            st.info(f"{label}: this job does not contain '{ch}' for preview.")
+        preview_fragment(
+            f"{cache_ns}_{label}",
+            zip_bytes,
+            path,
+            width=preview_w,
+            height=preview_h,
+            fill_flag=False,
+            trim_flag=False,
+            max_side=int(preview_w * 1.35),
+            caption=path or f"{label} preview",
+        )
         # ml/m² for the current channel (if present in XML)
         v = ml_map.get(ch)
         if v is not None:
