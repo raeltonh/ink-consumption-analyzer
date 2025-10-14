@@ -1,7 +1,6 @@
 from __future__ import annotations
 import time
 import streamlit as st
-from ux_helpers import form_or_live, cached_data, cached_resource, image_from_upload
 from PIL import Image
 st.set_page_config(page_title="Ink Consumption — ml/m² & ROI Analyzer", page_icon="assets/app_logo.png", layout="wide")
 
