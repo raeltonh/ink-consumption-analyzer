@@ -2,6 +2,20 @@
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
+from pathlib import Path
+import tempfile
+
+# Raiz do projeto (apenas leitura)
+ROOT = Path(__file__).parent
+ASSETS = ROOT / "assets"      # use só para leitura de arquivos estáticos
+
+# Pasta de trabalho/gravação (permitida no Streamlit Cloud)
+WORK_DIR = Path(tempfile.gettempdir()) / "ink_analyzer"
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+# EXEMPLOS:
+#   - Para salvar um PNG/CSV/etc: outfile = WORK_DIR / "saida.png"
+#   - Para ler um arquivo estático: logo = ASSETS / "logo.png"
 from __future__ import annotations
 import os, pathlib
 os.environ.setdefault("HOME", "/tmp")
