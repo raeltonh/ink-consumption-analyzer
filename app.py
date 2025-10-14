@@ -1,14 +1,22 @@
-from __future__ import annotations
-import time
-import streamlit as st
-st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
-
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
 from pathlib import Path
 import tempfile
+
+# Raiz do projeto (apenas leitura)
+ROOT = Path(__file__).parent
+ASSETS = ROOT / "assets"      # use só para leitura de arquivos estáticos
+
+# Pasta de trabalho/gravação (permitida no Streamlit Cloud)
+WORK_DIR = Path(tempfile.gettempdir()) / "ink_analyzer"
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+# EXEMPLOS:
+#   - Para salvar um PNG/CSV/etc: outfile = WORK_DIR / "saida.png"
+#   - Para ler um arquivo estático: logo = ASSETS / "logo.png"
+from __future__ import annotations
 import os, pathlib
 os.environ.setdefault("HOME", "/tmp")
 pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
@@ -105,6 +113,8 @@ _icon = _load_asset_image("page_icon") or "🖨️"
 # Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
+st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
+
 # ---------- Fast/Safe boot block ----------
 SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
 try:
@@ -2260,22 +2270,10 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
                 st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
     
             submitted = st.form_submit_button(f"Apply {label}")
-            if submitted:
-                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                    sync_mode_scalers_from_prefix(prefix)
-                st.success(f"{label} saved. Now click 'Calculate'.")
-            if submitted:
-                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                    sync_mode_scalers_from_prefix(prefix)
-                st.success(f"{label} saved. Now click 'Calculate'.")
-            if submitted:
-                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                    sync_mode_scalers_from_prefix(prefix)
-                st.success(f"{label} saved. Now click 'Calculate'.")
-            if submitted:
-                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                    sync_mode_scalers_from_prefix(prefix)
-                st.success(f"{label} saved. Now click 'Calculate'.")
+
+        if submitted:
+            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                sync_mode_scalers_from_prefix(prefix)
             st.success(f"{label} saved. Now click 'Calculate A and B'.")
 
 # =========================
@@ -4119,12 +4117,12 @@ def ui_single():
                 pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
                 pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-
-                submitted = st.form_submit_button(f"Apply {label}")
-                if submitted:
-                    if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                        sync_mode_scalers_from_prefix(prefix)
-                    st.success(f"{label} saved. Now click 'Calculate'.")
+    
+            submitted = st.form_submit_button("Apply Job")
+        if submitted:
+            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                sync_mode_scalers_from_prefix(prefix)
+            st.success(f"{label} saved. Now click 'Calculate'.")
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
