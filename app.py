@@ -645,13 +645,28 @@ def unit_label_short(unit_mode:str) -> str:
     return "m²" if unit_mode=="m2" else "m"
 
 def per_unit(unit_mode:str) -> str:
-    # newline before "/m²" so Streamlit's metric labels can wrap cleanly
+    # newline before unit so Streamlit's metric labels can wrap cleanly
     return f"\n/{unit_label_short(unit_mode)}"
 
+def consumption_unit(unit_mode: str) -> str:
+    return "ml/m²" if unit_mode == "m2" else "ml/m"
+
+def speed_unit(unit_mode: str) -> str:
+    return "m²/h" if unit_mode == "m2" else "m/h"
+
+def default_width_value(fallback: float) -> float:
+    if get_unit() == "m":
+        return float(st.session_state.get("global_linear_width", fallback))
+    return fallback
+
 def speed_label(unit_mode: str, speed_m2h: float, width_m: float) -> str:
-    """Rotula a velocidade apenas em m²/h (sem modo linear)."""
+    """Return human-friendly speed label respecting the selected unit."""
     m2_per_h = float(speed_m2h or 0.0)
-    return f"{m2_per_h:.0f} m²/h"
+    if unit_mode == "m2":
+        return f"{m2_per_h:.0f} m²/h"
+    # Linear mode — convert to m/h using provided width.
+    m_per_h = m2_per_h / max(1e-9, float(width_m or st.session_state.get("global_linear_width", 1.0)))
+    return f"{m_per_h:.0f} m/h (≈ {m2_per_h:.0f} m²/h)"
 
 from contextlib import contextmanager
 
@@ -916,6 +931,7 @@ def ui_sales_quick_quote():
             st.session_state["sales_zip_bytes"] = up.getvalue()
         z = st.session_state.get("sales_zip_bytes")
 
+        preview_metadata = None
         if z:
             try:
                 st.markdown("**Preview controls**")
@@ -967,6 +983,11 @@ def ui_sales_quick_quote():
                     value=st.session_state.get("sales_trim_channels", True),
                     key="sales_trim_channels",
                 )
+
+                preview_metadata = {
+                    "chan_map": chan_map,
+                    "jpgs": jpgs,
+                }
             except Exception as exc:
                 st.info(f"Preview controls unavailable: {exc}")
 
@@ -979,8 +1000,8 @@ def ui_sales_quick_quote():
                 st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
             cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
 
-            s2a, s2b = st.columns(2)
-            width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=1.45, step=0.01, key="sales_width_m")
+        s2a, s2b = st.columns(2)
+        width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=default_width_value(1.45), step=0.01, key="sales_width_m")
             c = s2b.number_input(f"Color ({cons_unit})", min_value=0.0, value=6.0, step=0.1, key="sales_c")
 
             s3a, s3b = st.columns(2)
@@ -996,6 +1017,34 @@ def ui_sales_quick_quote():
             ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
         else:
             ml_map_m2 = {"Color": c, "White": w, "FOF": f}
+
+        if z and preview_metadata:
+            try:
+                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
+                prev_w = int(st.session_state.get("sales_prev_w", 520))
+                prev_h = int(st.session_state.get("sales_prev_h", 400))
+                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
+                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
+                chan_map = preview_metadata.get("chan_map") or {}
+                jpgs = preview_metadata.get("jpgs") or []
+                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
+                if inner_path:
+                    st.markdown("**Preview (optional ZIP)**")
+                    preview_fragment(
+                        "sales_preview",
+                        z,
+                        inner_path,
+                        width=prev_w,
+                        height=prev_h,
+                        fill_flag=fill_preview if selected_channel == "Preview" else False,
+                        trim_flag=trim_channels if selected_channel != "Preview" else False,
+                        max_side=int(prev_w * 1.35),
+                        caption=inner_path or "Preview",
+                    )
+                else:
+                    st.info("Preview not available in this ZIP.")
+            except Exception as exc:
+                st.info(f"Preview unavailable: {exc}")
 
         st.markdown("---")
         section("Costs & currency", "Applies to this quote.")
@@ -1050,35 +1099,6 @@ def ui_sales_quick_quote():
             st.caption(f"Monthly fixed total: {total_fix_m:.2f}; production: {prod_m:,.0f} {unit_lbl}/month ⇒ allocation: {fixed_per_unit_used:.4f} {per_unit(UNIT)}")
 
     if do_compute:
-        z = st.session_state.get("sales_zip_bytes")
-        if z:
-            try:
-                files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales_preview")
-                chan_map = {get_channel_from_filename(path.split("/")[-1]): path for path in tifs if get_channel_from_filename(path.split("/")[-1])}
-                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
-                prev_w = int(st.session_state.get("sales_prev_w", 520))
-                prev_h = int(st.session_state.get("sales_prev_h", 400))
-                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
-                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
-                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
-                if inner_path:
-                    st.markdown("**Preview (optional ZIP)**")
-                    preview_fragment(
-                        "sales_preview",
-                        z,
-                        inner_path,
-                        width=prev_w,
-                        height=prev_h,
-                        fill_flag=fill_preview if selected_channel == "Preview" else False,
-                        trim_flag=trim_channels if selected_channel != "Preview" else False,
-                        max_side=int(prev_w * 1.35),
-                        caption=inner_path or "Preview",
-                    )
-                else:
-                    st.info("Preview not available in this ZIP.")
-            except Exception as exc:
-                st.info(f"Preview unavailable: {exc}")
-
         # Simulate — use a safe default speed for quick quotes
         res = simulate(
             UNIT, float(width_m), float(length_m), float(waste),
@@ -1871,8 +1891,8 @@ def monthly_production_inputs(unit_key: str, unit_lbl: str, state_prefix: str) -
             shifts = ca[0].number_input("Shifts/day", min_value=0, value=1, step=1, help="Shifts per day.", key=f"{state_prefix}_prod_shifts")
             days = ca[1].number_input("Days/month", min_value=0, value=22, step=1, help="Days in the month.", key=f"{state_prefix}_prod_days")
             hours = ca[2].number_input("Hours/shift", min_value=0.0, value=7.0, step=0.5, help="Hours per shift.", key=f"{state_prefix}_prod_hours")
-            speed_m2h = ca[3].number_input("Avg speed (m²/h)", min_value=0.0, value=200.0, step=5.0, help="Average speed.", key=f"{state_prefix}_prod_speed")
-            width_use = ca[4].number_input("Usable width (m)", min_value=0.01, value=1.50, step=0.01, help="Used to convert m/h if unit = meter.", key=f"{state_prefix}_prod_width")
+            speed_m2h = ca[3].number_input(f"Avg speed ({speed_unit(unit_key)})", min_value=0.0, value=200.0, step=5.0, help="Average production speed.", key=f"{state_prefix}_prod_speed")
+            width_use = ca[4].number_input("Usable width (m)", min_value=0.01, value=default_width_value(1.50), step=0.01, help="Needed to convert between m² and linear meters.", key=f"{state_prefix}_prod_width")
             util_pct = ca[5].number_input("Utilization factor (%)", min_value=0.0, value=85.0, step=1.0, help="Average efficiency.", key=f"{state_prefix}_prod_util")
             util = (util_pct / 100.0)
             if unit_key == "m2":
@@ -2091,6 +2111,8 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
                                     show_comp: bool = True,
                                     preview_size: str = "M",
                                     show_totals: bool = True) -> bytes:
+    unit_mode = get_unit()
+    cons_label = consumption_unit(unit_mode)
     ch = list(channels or [])
     if not ch:
         ch = ["Cyan","Magenta","Yellow","Black","Red","Green","FOF","White"]
@@ -2109,7 +2131,7 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
         fig = plt.figure(figsize=(8.27,11.69), dpi=150)  # A4 retrato
-        fig.suptitle("A × B Comparison — Consumption per Channel (ml/m²)", fontsize=16, fontweight="bold", y=0.98)
+        fig.suptitle(f"A × B Comparison — Consumption per Channel ({cons_label})", fontsize=16, fontweight="bold", y=0.98)
         fig.text(0.08, 0.955, dt.datetime.now().strftime("%Y-%m-%d %H:%M"), fontsize=9, color="#7aa4ff")
         # Labels (use file names if provided)
         nameA = (labelA or "Job A")
@@ -2171,7 +2193,7 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
             axA.axis('off')
             axA.set_title(_short(nameA, 36), fontsize=8)
             if show_totals:
-                axA.text(0.5, 0.02, f"Total: {totalA:.2f} ml/m²", ha='center', va='bottom', fontsize=8,
+                axA.text(0.5, 0.02, f"Total: {totalA:.2f} {cons_label}", ha='center', va='bottom', fontsize=8,
                         transform=axA.transAxes, bbox=dict(facecolor='white', alpha=0.65, edgecolor='none', pad=2))
         if imgB is not None:
             axB = fig.add_axes(prev_rects[1])
@@ -2179,7 +2201,7 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
             axB.axis('off')
             axB.set_title(_short(nameB, 36), fontsize=8)
             if show_totals:
-                axB.text(0.5, 0.02, f"Total: {totalB:.2f} ml/m²", ha='center', va='bottom', fontsize=8,
+                axB.text(0.5, 0.02, f"Total: {totalB:.2f} {cons_label}", ha='center', va='bottom', fontsize=8,
                         transform=axB.transAxes, bbox=dict(facecolor='white', alpha=0.65, edgecolor='none', pad=2))
 
         # Barras agrupadas
@@ -2189,7 +2211,7 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
         bars1 = ax1.bar(x - width/2, yA, width, color=colors, label=_short(nameA))
         bars2 = ax1.bar(x + width/2, yB, width, color=colors, hatch="//", edgecolor="black", linewidth=0.6, alpha=0.85, label=_short(nameB))
         ax1.set_xticks(x); ax1.set_xticklabels(ch)
-        ax1.set_ylabel("ml/m²"); ax1.set_title("Clustered bars")
+        ax1.set_ylabel(cons_label); ax1.set_title(f"Clustered bars ({cons_label})")
         ax1.legend(loc="upper right", frameon=False)
         ymax = max([*yA,*yB,1e-9])*1.15; ax1.set_ylim(0, ymax)
         for b in list(bars1)+list(bars2):
@@ -2225,7 +2247,7 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
         def _wrap_name_for_header(name: str, width: int | None = None) -> str:
             base = _short(name, 56)
             w = width if width else _wrap_width_for(base)
-            return textwrap.fill(base, width=w) + "\n(ml/m²)"
+            return textwrap.fill(base, width=w) + f"\n({cons_label})"
         col_labels = [
             "Channel",
             _wrap_name_for_header(nameA),
@@ -2368,22 +2390,23 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
         elif cons_src == "Manual":
             with st_div("ink-fixed-grid"):
                 mcols = st.columns(3)
+                cons_label = consumption_unit(get_unit())
                 mcols[0].number_input(
-                    f"Manual — Color (ml{per_unit('m2')})",
+                    f"Manual — Color ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
                     min_value=0.0,
                     step=0.1,
                     key=f"{prefix}_man_c",
                 )
                 mcols[1].number_input(
-                    f"Manual — White (ml{per_unit('m2')})",
+                    f"Manual — White ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
                     min_value=0.0,
                     step=0.1,
                     key=f"{prefix}_man_w",
                 )
                 mcols[2].number_input(
-                    f"Manual — FOF (ml{per_unit('m2')})",
+                    f"Manual — FOF ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
                     min_value=0.0,
                     step=0.1,
@@ -2497,7 +2520,7 @@ def build_single_pdf_matplotlib(channels: List[str], y: List[float], ml_map: dic
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
         fig = plt.figure(figsize=(8.27,11.69), dpi=150)
-        fig.suptitle("Single — Consumption per Channel (ml/m²)", fontsize=16, fontweight="bold", y=0.98)
+        fig.suptitle(f"Single — Consumption per Channel ({cons_label})", fontsize=16, fontweight="bold", y=0.98)
         fig.text(0.08, 0.955, dt.datetime.now().strftime("%Y-%m-%d %H:%M"), fontsize=9, color="#7aa4ff")
         name = (label or "Job")
         def _short(s: str, maxlen: int = 34) -> str:
@@ -2548,7 +2571,7 @@ def build_single_pdf_matplotlib(channels: List[str], y: List[float], ml_map: dic
             axp.axis('off')
             axp.set_title(_short(name, 40), fontsize=9)
             if show_totals:
-                axp.text(0.5, 0.02, f"Total: {total:.2f} ml/m²", ha='center', va='bottom', fontsize=9,
+                axp.text(0.5, 0.02, f"Total: {total:.2f} {cons_label}", ha='center', va='bottom', fontsize=9,
                         transform=axp.transAxes, bbox=dict(facecolor='white', alpha=0.65, edgecolor='none', pad=2))
 
         # Bars
@@ -2557,7 +2580,7 @@ def build_single_pdf_matplotlib(channels: List[str], y: List[float], ml_map: dic
         colors = [CHANNEL_COLORS.get(c,"#888") for c in ch]
         bars = ax1.bar(x, y, width, color=colors, label=_short(name))
         ax1.set_xticks(x); ax1.set_xticklabels(ch)
-        ax1.set_ylabel("ml/m²"); ax1.set_title("Per-channel consumption")
+        ax1.set_ylabel(cons_label); ax1.set_title(f"Per-channel consumption ({cons_label})")
         ax1.legend(loc="upper right", frameon=False)
         ymax = max([*y, 1e-9]) * 1.15; ax1.set_ylim(0, ymax)
         for b in bars:
@@ -2587,7 +2610,7 @@ def build_single_pdf_matplotlib(channels: List[str], y: List[float], ml_map: dic
             return 26
         def _wrap_name(n: str) -> str:
             base = _short(n, 56)
-            return textwrap.fill(base, width=_wrap_width_for(base)) + "\n(ml/m²)"
+            return textwrap.fill(base, width=_wrap_width_for(base)) + f"\n({cons_label})"
         col_labels = ["Channel", _wrap_name(name), "% of total"]
         pct = [ (0.0 if total==0 else (ml_map.get(c,0.0)/total*100.0)) for c in ch ]
         cell_text = [[c, f"{y[i]:.2f}", f"{pct[i]:.1f}%"] for i,c in enumerate(ch)]
@@ -2656,7 +2679,7 @@ def ui_compare_option_b():
     # Builders: PREVIEW (sem inputs) e INPUTS (para exibir após o PDF A×B)
     # =========================
     def job_preview(prefix: str, label: str, zbytes: bytes, show_ml: bool = True, show_px: bool = True):
-        """Show preview, per-channel (ml/m²) chart and Fire pixels — no inputs here."""
+        """Show preview, per-channel consumption chart and Fire pixels — unit-aware."""
         files, xmls, jpgs, tifs, ad = read_zip_listing(zbytes)
         c1, c2, c3 = st.columns(3)
         c1.metric("XML files", len(xmls)); c2.metric("JPG files", len(jpgs)); c3.metric("TIFF files", len(tifs))
@@ -2680,8 +2703,9 @@ def ui_compare_option_b():
         xml_legend_idx = 0
         if st.session_state.get(f"{prefix}_xml_legend") in xmls:
             xml_legend_idx = xmls.index(st.session_state.get(f"{prefix}_xml_legend"))
+        unit_consumption_label = consumption_unit(get_unit())
         xml_for_legend = st.selectbox(
-            f"{label} — XML for legend (ml/m²)",
+            f"{label} — XML for legend ({unit_consumption_label})",
             xmls,
             index=xml_legend_idx,
             help="Used only for the per-channel chart below.",
@@ -2693,8 +2717,22 @@ def ui_compare_option_b():
             fb = pick_first_with_colors(zbytes, cache_ns=prefix)
             if fb:
                 mlm2 = fb
+        # Convert to current unit (ml/m when linear)
+        display_consumption = dict(mlm2 or {})
+        if get_unit() != "m2":
+            try:
+                w_xml_sel, _h_dummy, _a_dummy = get_xml_dims_m(read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix))
+            except Exception:
+                w_xml_sel = 0.0
+            width_for_conversion = float(
+                st.session_state.get(f"{prefix}_width_m")
+                or w_xml_sel
+                or st.session_state.get("global_linear_width", 1.0)
+            )
+            display_consumption = {k: float(v) * width_for_conversion for k, v in (display_consumption or {}).items()}
+
         # guarda para o gráfico global A×B
-        st.session_state[f"{prefix}_legend_ml_map"] = dict(mlm2 or {})
+        st.session_state[f"{prefix}_legend_ml_map"] = dict(display_consumption or {})
 
         # Always render previews and charts (no manual Update button)
         do_render = True
@@ -2715,23 +2753,24 @@ def ui_compare_option_b():
                 max_side=int(prev_w * 1.35),
                 caption=path or "Preview",
             )
-            if selected_channel != "Preview" and mlm2:
-                v = mlm2.get(selected_channel)
+            if selected_channel != "Preview" and display_consumption:
+                v = display_consumption.get(selected_channel)
                 if v is not None:
-                    st.caption(f"**{selected_channel}**: {v:.2f} ml/m²")
-            if mlm2:
-                st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
+                    st.caption(f"**{selected_channel}**: {v:.2f} {unit_consumption_label}")
+            if display_consumption:
+                total_display = sum(float(v or 0.0) for v in display_consumption.values())
+                st.markdown(f"Total consumption: **{total_display:.2f} {unit_consumption_label}**")
         with rightC:
             st.empty()
 
-        # === Per-channel consumption (ml/m²) — largura total ===
+        # === Per-channel consumption (unit aware) — largura total ===
         if show_ml:
             render_title_with_hint(
-                "Per-channel consumption (ml/m²)",
-                "ml/m² = file coverage × base channel factor × mode multipliers (Color/White/FOF) × user adjustments."
+                f"Per-channel consumption ({unit_consumption_label})",
+                f"{unit_consumption_label} = file coverage × base channel factor × mode multipliers (Color/White/FOF) × user adjustments."
             )
-            if mlm2:
-                items = sorted(mlm2.items(), key=lambda kv: kv[1], reverse=True)
+            if display_consumption:
+                items = sorted(display_consumption.items(), key=lambda kv: kv[1], reverse=True)
                 labels = [k for k, _ in items]
                 values = [v for _, v in items]
                 colors = [CHANNEL_COLORS.get(k, "#888") for k in labels]
@@ -2748,7 +2787,7 @@ def ui_compare_option_b():
                     template="plotly_white",
                     height=prev_h,
                     margin=dict(l=10, r=10, t=30, b=10),
-                    yaxis_title="ml/m²",
+                    yaxis_title=unit_consumption_label,
                     xaxis_title="Channel",
                 )
                 st.plotly_chart(fig_ch, use_container_width=True, key=f"{prefix}_ml_chart", config=plotly_cfg())
@@ -3578,7 +3617,8 @@ def render_axb_per_channel_chart(height=None):
     if not (mlA_map or mlB_map):
         return
 
-    st.markdown("**A×B — Per-channel consumption (ml/m²)**")
+    cons_label = consumption_unit(get_unit())
+    st.markdown(f"**A×B — Per-channel consumption ({cons_label})**")
 
     # estados/controles (mesmos nomes do bloco original)
     if "cmp_sort_choice" not in st.session_state:
@@ -3629,7 +3669,7 @@ def render_axb_per_channel_chart(height=None):
         barmode="group",
         height=h,
         margin=dict(l=10, r=10, t=30, b=10),
-        yaxis_title="ml/m²",
+        yaxis_title=cons_label,
         xaxis_title="Channel",
         legend_title=None,
     )
@@ -3732,8 +3772,9 @@ def set_qp(key: str, value: str):
             pass
 
 def get_unit() -> str:
-    """Modo único de unidade: sempre m²."""
-    return "m2"
+    """Return currently selected base unit ('m2' or 'm')."""
+    val = str(st.session_state.get("global_unit", "m2")).lower()
+    return "m2" if val in {"m2", "m²", "square"} else "m"
 
 def apply_consumption_source(xml_bytes, cons_src, mode_key, factors_dict, man_c=0.0, man_w=0.0, man_f=0.0):
     mlmap_xml = ml_per_m2_from_xml_bytes(xml_bytes)
@@ -3825,8 +3866,28 @@ st.caption("ZIP/XML • Channel preview • XML analysis • A×B comparison •
 # Global settings
 # =========================
 section("Global settings", "Applies to all flows.")
-st.session_state["global_unit"] = "m2"
-st.caption("Base unit: m²")
+if "global_unit" not in st.session_state:
+    st.session_state["global_unit"] = "m2"
+unit_option = st.radio(
+    "Base unit",
+    ("Square meter (m²)", "Linear meter (m)"),
+    index=0 if st.session_state.get("global_unit", "m2") == "m2" else 1,
+    horizontal=True,
+    key="global_unit_selector",
+    help="Choose whether calculators work in square meters or linear meters.",
+)
+st.session_state["global_unit"] = "m2" if unit_option.startswith("Square") else "m"
+if st.session_state["global_unit"] == "m":
+    linear_default = st.number_input(
+        "Default usable width for linear mode (m)",
+        min_value=0.01,
+        value=float(st.session_state.get("global_linear_width", 1.40)),
+        step=0.01,
+        key="global_linear_width",
+        help="Used to prefill width fields when working in linear meters.",
+    )
+    st.session_state["global_linear_width"] = float(linear_default)
+st.caption(f"Current unit: {'m²' if st.session_state['global_unit']=='m2' else 'm'}")
 st.markdown("---")
 
 # =========================
@@ -4245,22 +4306,23 @@ def ui_single():
                 render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
             elif cons_src == "Manual":
                 mcols = st.columns(3)
+                cons_label = consumption_unit(get_unit())
                 mcols[0].number_input(
-                    f"Manual — Color (ml{per_unit('m2')})",
+                    f"Manual — Color ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
                     min_value=0.0,
                     step=0.1,
                     key=f"{prefix}_man_c",
                 )
                 mcols[1].number_input(
-                    f"Manual — White (ml{per_unit('m2')})",
+                    f"Manual — White ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
                     min_value=0.0,
                     step=0.1,
                     key=f"{prefix}_man_w",
                 )
                 mcols[2].number_input(
-                    f"Manual — FOF (ml{per_unit('m2')})",
+                    f"Manual — FOF ({cons_label})",
                     value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
                     min_value=0.0,
                     step=0.1,
@@ -5107,9 +5169,10 @@ def ui_compare():
                 man_color = man_white = man_fof = 0.0
                 if cons_source == "Manual":
                     mcols = st.columns(3)
-                    man_color = mcols[0].number_input(f"Manual — Color (ml{per_unit('m2')})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_c")
-                    man_white = mcols[1].number_input(f"Manual — White (ml{per_unit('m2')})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_w")
-                    man_fof   = mcols[2].number_input(f"Manual — FOF (ml{per_unit('m2')})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_f")
+                    cons_label = consumption_unit(UNIT)
+                    man_color = mcols[0].number_input(f"Manual — Color ({cons_label})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_c")
+                    man_white = mcols[1].number_input(f"Manual — White ({cons_label})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_w")
+                    man_fof   = mcols[2].number_input(f"Manual — FOF ({cons_label})", value=0.0, min_value=0.0, step=0.1, key=f"{key_prefix}_man_f")
 
                 # Variable labor por unidade (usa velocidade do modo)
                 lab1, lab2 = st.columns([1, 1])
