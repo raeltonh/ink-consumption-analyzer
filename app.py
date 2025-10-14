@@ -1,6 +1,7 @@
 from __future__ import annotations
 import time
 import streamlit as st
+from ux_helpers import form_or_live, cached_data, cached_resource, image_from_upload
 from PIL import Image
 st.set_page_config(page_title="Ink Consumption — ml/m² & ROI Analyzer", page_icon="assets/app_logo.png", layout="wide")
 
@@ -663,6 +664,94 @@ def st_div(class_name: str):
     finally:
         st.markdown('</div>', unsafe_allow_html=True)
 
+
+class _FormOrLiveFlag:
+    """Wrapper that carries trigger state and evaluates to bool."""
+    def __init__(self):
+        self._value = False
+
+    def set(self, value: bool):
+        self._value = bool(value)
+
+    def __bool__(self):
+        return bool(self._value)
+
+    @property
+    def triggered(self) -> bool:
+        return bool(self._value)
+
+
+class form_or_live:
+    """
+    Context manager that renders a form with an Apply button, or live container when the user enables auto-update.
+    Usage:
+        with form_or_live(\"block_key\", \"Apply block\", live_key=\"live_block\") as do_compute:
+            ... inputs ...
+        if do_compute:
+            ... heavy compute ...
+    """
+    def __init__(
+        self,
+        form_key: str,
+        submit_label: str,
+        *,
+        live_key: str | None = None,
+        live_label: str | None = None,
+        live_help: str | None = None,
+        button_type: str = "primary",
+        help: str | None = None,
+    ):
+        self.form_key = form_key
+        self.submit_label = submit_label
+        self.live_key = live_key
+        self.live_label = live_label
+        self.live_help = live_help
+        self.button_type = button_type
+        self.button_help = help
+        self._token = _FormOrLiveFlag()
+        self._cm = None
+        self._live_enabled = False
+
+    def __enter__(self):
+        if self.live_key:
+            if self.live_key not in st.session_state:
+                st.session_state[self.live_key] = False
+            label = self.live_label or f"Live update — {self.submit_label}"
+            try:
+                self._live_enabled = bool(
+                    st.sidebar.toggle(
+                        label,
+                        value=st.session_state.get(self.live_key, False),
+                        key=self.live_key,
+                        help=self.live_help,
+                    )
+                )
+            except Exception:
+                # Sidebar may be unavailable in certain fragments; fall back silently.
+                self._live_enabled = bool(st.session_state.get(self.live_key, False))
+
+        if self._live_enabled:
+            self._cm = st.container()
+        else:
+            self._cm = st.form(key=self.form_key)
+        self._cm.__enter__()
+        return self._token
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._live_enabled:
+            self._token.set(True)
+            self._cm.__exit__(exc_type, exc_value, traceback)
+        else:
+            submitted = st.form_submit_button(
+                self.submit_label,
+                type=self.button_type,
+                help=self.button_help,
+            )
+            self._token.set(submitted)
+            self._cm.__exit__(exc_type, exc_value, traceback)
+        return False
+
+
 def style_button_by_key(key: str, bg: str, fg: str = "#ffffff", border: str = "transparent"):
     css = f"""
     <style>
@@ -731,6 +820,7 @@ def render_info_table(title: str, rows: List[Tuple[str, str, bool]]):
 # =========================
 # Gráfico de Break-even (Plotly)
 # =========================
+@st.cache_data(show_spinner=False)
 def breakeven_figure(price_u: float, variable_u: float, fixed_month: float,
                      unit_lbl: str, sym: str, fx: float, title: str = "Break-even"):
     if price_u <= 0 or price_u <= variable_u or fixed_month <= 0:
@@ -816,168 +906,180 @@ def ui_sales_quick_quote():
     unit_lbl = unit_label_short(UNIT)
     section("Sales — Quick quote (manual)", "Optional ZIP. Or manually enter ink consumption per m² or per linear meter.")
 
-    up = st.file_uploader("Optional Job (ZIP)", type="zip", key="sales_up_zip")
-    if up is not None:
-        st.session_state["sales_zip_bytes"] = up.getvalue()
-    z = st.session_state.get("sales_zip_bytes")
+    with form_or_live(
+        "sales_quote_inputs",
+        "Calculate quote",
+        live_key="sales_quote_live",
+        live_help="Enable to recalculate automatically while editing the quote.",
+    ) as do_compute:
+        up = st.file_uploader("Optional Job (ZIP)", type="zip", key="sales_up_zip")
+        if up is not None:
+            st.session_state["sales_zip_bytes"] = up.getvalue()
+        z = st.session_state.get("sales_zip_bytes")
 
-    if z:
-        try:
-            st.markdown("**Preview (optional ZIP)**")
-            files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales")
-            m_prev, t_prev = st.columns(2)
-            m_prev.metric("XML files", len(xmls))
-            t_prev.metric("Preview images", len(jpgs) + len(tifs))
+        if z:
+            try:
+                st.markdown("**Preview controls**")
+                files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales")
+                m_prev, t_prev = st.columns(2)
+                m_prev.metric("XML files", len(xmls))
+                t_prev.metric("Preview images", len(jpgs) + len(tifs))
 
-            chan_map = {}
-            for path in tifs:
-                ch = get_channel_from_filename(path.split("/")[-1])
-                if ch:
-                    chan_map[ch] = path
+                chan_map = {}
+                for path in tifs:
+                    ch = get_channel_from_filename(path.split("/")[-1])
+                    if ch:
+                        chan_map[ch] = path
 
-            channel_options = ["Preview"] + sorted(chan_map.keys())
-            selected_channel = st.radio(
-                "View",
-                channel_options,
-                index=channel_options.index(st.session_state.get("sales_preview_channel", "Preview"))
-                if st.session_state.get("sales_preview_channel", "Preview") in channel_options else 0,
-                horizontal=True,
-                key="sales_preview_channel",
-            )
-
-            c_w, c_h = st.columns(2)
-            prev_w = c_w.slider(
-                "Preview width (px)",
-                320,
-                900,
-                int(st.session_state.get("sales_prev_w", 520)),
-                10,
-                key="sales_prev_w",
-            )
-            prev_h = c_h.slider(
-                "Preview height (px)",
-                260,
-                800,
-                int(st.session_state.get("sales_prev_h", 400)),
-                10,
-                key="sales_prev_h",
-            )
-            fill_preview = st.checkbox(
-                "Fill preview image (JPG)",
-                value=st.session_state.get("sales_fill_preview", True),
-                key="sales_fill_preview",
-            )
-            trim_channels = st.checkbox(
-                "Auto-trim white margins (channels)",
-                value=st.session_state.get("sales_trim_channels", True),
-                key="sales_trim_channels",
-            )
-
-            inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
-            if inner_path:
-                preview_fragment(
-                    "sales_preview",
-                    z,
-                    inner_path,
-                    width=int(prev_w),
-                    height=int(prev_h),
-                    fill_flag=fill_preview if selected_channel == "Preview" else False,
-                    trim_flag=trim_channels if selected_channel != "Preview" else False,
-                    max_side=int(prev_w * 1.35),
-                    caption=inner_path or "Preview",
+                channel_options = ["Preview"] + sorted(chan_map.keys())
+                st.radio(
+                    "View",
+                    channel_options,
+                    index=channel_options.index(st.session_state.get("sales_preview_channel", "Preview"))
+                    if st.session_state.get("sales_preview_channel", "Preview") in channel_options else 0,
+                    horizontal=True,
+                    key="sales_preview_channel",
                 )
-            else:
-                st.info("Preview not available in this ZIP.")
-        except Exception as exc:
-            st.info(f"Preview unavailable: {exc}")
 
-    st.markdown("---")
-    # Aligned grid for Sales inputs with 3-column first row
-    with st_div("ink-fixed-grid"):
-        # Row 1: [vazio] | [vazio] | Consumption unit
-        s1a, s1b, s1c = st.columns(3)
-        with s1a: st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
-        with s1b: st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
-        cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
+                c_w, c_h = st.columns(2)
+                c_w.slider(
+                    "Preview width (px)",
+                    320,
+                    900,
+                    int(st.session_state.get("sales_prev_w", 520)),
+                    10,
+                    key="sales_prev_w",
+                )
+                c_h.slider(
+                    "Preview height (px)",
+                    260,
+                    800,
+                    int(st.session_state.get("sales_prev_h", 400)),
+                    10,
+                    key="sales_prev_h",
+                )
+                st.checkbox(
+                    "Fill preview image (JPG)",
+                    value=st.session_state.get("sales_fill_preview", True),
+                    key="sales_fill_preview",
+                )
+                st.checkbox(
+                    "Auto-trim white margins (channels)",
+                    value=st.session_state.get("sales_trim_channels", True),
+                    key="sales_trim_channels",
+                )
+            except Exception as exc:
+                st.info(f"Preview controls unavailable: {exc}")
 
-        # Row 2: Usable width (m) | Color
-        s2a, s2b = st.columns(2)
-        width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=1.45, step=0.01, key="sales_width_m")
-        c = s2b.number_input(f"Color ({cons_unit})", min_value=0.0, value=6.0, step=0.1, key="sales_c")
-
-        # Row 3: Length (m) | White
-        s3a, s3b = st.columns(2)
-        length_m = s3a.number_input("Length (m)", min_value=0.0, value=1.00, step=0.01, key="sales_length_m")
-        w = s3b.number_input(f"White ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_w")
-
-        # Row 4: Waste (%) | FOF
-        s4a, s4b = st.columns(2)
-        waste = s4a.number_input("Waste (%)", min_value=0.0, value=2.0, step=0.5, key="sales_waste")
-        f = s4b.number_input(f"FOF ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_f")
-
-    # Build ml/m² map from manual inputs
-    if cons_unit == "ml/m":
-        w_safe = max(1e-9, float(width_m or 0.0))
-        ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
-    else:
-        ml_map_m2 = {"Color": c, "White": w, "FOF": f}
-
-    st.markdown("---")
-    section("Costs & currency", "Applies to this quote.")
-    with st_div("ink-fixed-grid"):
-        cc1, cc2, cc3, cc4 = st.columns(4)
-        ink_c = cc1.number_input("Color ink ($/L)", min_value=0.0, value=float(st.session_state.get("sales_ink_c", DEFAULTS["ink_color_per_l"])), step=1.0, key="sales_ink_c")
-        ink_w = cc2.number_input("White ink ($/L)", min_value=0.0, value=float(st.session_state.get("sales_ink_w", DEFAULTS["ink_white_per_l"])), step=1.0, key="sales_ink_w")
-        ink_f = cc3.number_input("FOF / Pretreat ($/L)", min_value=0.0, value=float(st.session_state.get("sales_fof", DEFAULTS["fof_per_l"])), step=1.0, key="sales_fof")
-        fabric = cc4.number_input(f"Substrate ({per_unit(UNIT)})", min_value=0.0, value=float(st.session_state.get("sales_fabric", DEFAULTS["fabric_per_unit"])), step=0.10, key="sales_fabric")
-
-    cur1, cur2, cur3 = st.columns(3)
-    SYM  = cur1.text_input("Local currency symbol", value=st.session_state.get("sales_local_sym", DEFAULTS["local_symbol"]))
-    FX   = cur2.number_input("USD → Local (FX)", min_value=0.0, value=float(st.session_state.get("sales_fx", DEFAULTS["usd_to_local"])), step=0.01)
-    OUTC = cur3.radio("Output currency", ["USD", "Local"], index=1, horizontal=True, key="sales_curr_out")
-
-    st.markdown("---")
-    section("Pricing", "Direct per unit or monthly helper.")
-    fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0, horizontal=True, key="sales_fix_mode")
-    if fix_mode.startswith("Direct"):
+        st.markdown("---")
         with st_div("ink-fixed-grid"):
-            mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-            fixed_unit = mv1.number_input(f"Fixed allocation (/"+unit_lbl+")", min_value=0.0, value=0.0, step=0.05, key="sales_fixed_unit")
-            price_in   = mv2.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
-            margin     = mv3.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
-            taxes      = mv4.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
-            terms      = mv5.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
-            rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
-        fixed_per_unit_used = fixed_unit
-        total_fix_m = 0.0
-        st.caption(f"Fixed allocation in use: {fixed_per_unit_used:.2f} {per_unit(UNIT)}")
-    else:
-        st.caption("Monthly fixed costs — labor, leasing, depreciation, overheads and other items.")
-        with st_div("ink-fixed-grid"):
-            fx1, fx2, fx3, fx4 = st.columns(4)
-            fl = fx1.number_input("Labor (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_labor_m")
-            le = fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_leasing_m")
-            dp = fx3.number_input("Depreciation (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_depr_m")
-            oh = fx4.number_input("Overheads (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_over_m")
-        st.caption("Other fixed (monthly)")
-        _fix_input = ensure_df(st.session_state.get("sales_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
-        df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key="sales_fix_others_editor")
-        sum_others = ensure_df(df_fix, ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum()
-        prod_m = monthly_production_inputs(UNIT, unit_lbl, state_prefix="sales_fix")
-        total_fix_m = fl+le+dp+oh+sum_others
-        fixed_per_unit_used = (total_fix_m/prod_m) if prod_m>0 else 0.0
-        with st_div("ink-fixed-grid"):
-            price_in   = st.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
-            margin     = st.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
-            taxes      = st.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
-            terms      = st.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
-            rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
-        st.caption(f"Monthly fixed total: {total_fix_m:.2f}; production: {prod_m:,.0f} {unit_lbl}/month ⇒ allocation: {fixed_per_unit_used:.4f} {per_unit(UNIT)}")
+            s1a, s1b, s1c = st.columns(3)
+            with s1a:
+                st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
+            with s1b:
+                st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
+            cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
 
-    clicked = st.button("Calculate quote", type="primary", key="sales_calc")
+            s2a, s2b = st.columns(2)
+            width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=1.45, step=0.01, key="sales_width_m")
+            c = s2b.number_input(f"Color ({cons_unit})", min_value=0.0, value=6.0, step=0.1, key="sales_c")
 
-    # Compute and render only after click
-    if clicked:
+            s3a, s3b = st.columns(2)
+            length_m = s3a.number_input("Length (m)", min_value=0.0, value=1.00, step=0.01, key="sales_length_m")
+            w = s3b.number_input(f"White ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_w")
+
+            s4a, s4b = st.columns(2)
+            waste = s4a.number_input("Waste (%)", min_value=0.0, value=2.0, step=0.5, key="sales_waste")
+            f = s4b.number_input(f"FOF ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_f")
+
+        if cons_unit == "ml/m":
+            w_safe = max(1e-9, float(width_m or 0.0))
+            ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
+        else:
+            ml_map_m2 = {"Color": c, "White": w, "FOF": f}
+
+        st.markdown("---")
+        section("Costs & currency", "Applies to this quote.")
+        with st_div("ink-fixed-grid"):
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            ink_c = cc1.number_input("Color ink ($/L)", min_value=0.0, value=float(st.session_state.get("sales_ink_c", DEFAULTS["ink_color_per_l"])), step=1.0, key="sales_ink_c")
+            ink_w = cc2.number_input("White ink ($/L)", min_value=0.0, value=float(st.session_state.get("sales_ink_w", DEFAULTS["ink_white_per_l"])), step=1.0, key="sales_ink_w")
+            ink_f = cc3.number_input("FOF / Pretreat ($/L)", min_value=0.0, value=float(st.session_state.get("sales_fof", DEFAULTS["fof_per_l"])), step=1.0, key="sales_fof")
+            fabric = cc4.number_input(f"Substrate ({per_unit(UNIT)})", min_value=0.0, value=float(st.session_state.get("sales_fabric", DEFAULTS["fabric_per_unit"])), step=0.10, key="sales_fabric")
+
+        cur1, cur2, cur3 = st.columns(3)
+        SYM  = cur1.text_input("Local currency symbol", value=st.session_state.get("sales_local_sym", DEFAULTS["local_symbol"]))
+        FX   = cur2.number_input("USD → Local (FX)", min_value=0.0, value=float(st.session_state.get("sales_fx", DEFAULTS["usd_to_local"])), step=0.01)
+        OUTC = cur3.radio("Output currency", ["USD", "Local"], index=1, horizontal=True, key="sales_curr_out")
+
+        st.markdown("---")
+        section("Pricing", "Direct per unit or monthly helper.")
+        fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0, horizontal=True, key="sales_fix_mode")
+        if fix_mode.startswith("Direct"):
+            with st_div("ink-fixed-grid"):
+                mv1, mv2, mv3, mv4, mv5 = st.columns(5)
+                fixed_unit = mv1.number_input(f"Fixed allocation (/"+unit_lbl+")", min_value=0.0, value=0.0, step=0.05, key="sales_fixed_unit")
+                price_in   = mv2.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
+                margin     = mv3.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
+                taxes      = mv4.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
+                terms      = mv5.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
+                rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
+            fixed_per_unit_used = fixed_unit
+            total_fix_m = 0.0
+            st.caption(f"Fixed allocation in use: {fixed_per_unit_used:.2f} {per_unit(UNIT)}")
+        else:
+            st.caption("Monthly fixed costs — labor, leasing, depreciation, overheads and other items.")
+            with st_div("ink-fixed-grid"):
+                fx1, fx2, fx3, fx4 = st.columns(4)
+                fl = fx1.number_input("Labor (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_labor_m")
+                le = fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_leasing_m")
+                dp = fx3.number_input("Depreciation (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_depr_m")
+                oh = fx4.number_input("Overheads (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_over_m")
+            st.caption("Other fixed (monthly)")
+            _fix_input = ensure_df(st.session_state.get("sales_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+            df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key="sales_fix_others_editor")
+            sum_others = ensure_df(df_fix, ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum()
+            prod_m = monthly_production_inputs(UNIT, unit_lbl, state_prefix="sales_fix")
+            total_fix_m = fl+le+dp+oh+sum_others
+            fixed_per_unit_used = (total_fix_m/prod_m) if prod_m>0 else 0.0
+            with st_div("ink-fixed-grid"):
+                price_in   = st.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
+                margin     = st.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
+                taxes      = st.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
+                terms      = st.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
+                rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
+            st.caption(f"Monthly fixed total: {total_fix_m:.2f}; production: {prod_m:,.0f} {unit_lbl}/month ⇒ allocation: {fixed_per_unit_used:.4f} {per_unit(UNIT)}")
+
+    if do_compute:
+        z = st.session_state.get("sales_zip_bytes")
+        if z:
+            try:
+                files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales_preview")
+                chan_map = {get_channel_from_filename(path.split("/")[-1]): path for path in tifs if get_channel_from_filename(path.split("/")[-1])}
+                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
+                prev_w = int(st.session_state.get("sales_prev_w", 520))
+                prev_h = int(st.session_state.get("sales_prev_h", 400))
+                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
+                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
+                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
+                if inner_path:
+                    st.markdown("**Preview (optional ZIP)**")
+                    preview_fragment(
+                        "sales_preview",
+                        z,
+                        inner_path,
+                        width=prev_w,
+                        height=prev_h,
+                        fill_flag=fill_preview if selected_channel == "Preview" else False,
+                        trim_flag=trim_channels if selected_channel != "Preview" else False,
+                        max_side=int(prev_w * 1.35),
+                        caption=inner_path or "Preview",
+                    )
+                else:
+                    st.info("Preview not available in this ZIP.")
+            except Exception as exc:
+                st.info(f"Preview unavailable: {exc}")
+
         # Simulate — use a safe default speed for quick quotes
         res = simulate(
             UNIT, float(width_m), float(length_m), float(waste),
@@ -1059,6 +1161,8 @@ def ui_sales_quick_quote():
             cc1, cc2 = st.columns(2)
             with cc1: st.subheader("Variable × Fixed (per unit)"); st.plotly_chart(fig_vf, use_container_width=True, key="sales_vf_chart", config=plotly_cfg())
             with cc2: st.subheader("Variable breakdown (per unit)"); st.plotly_chart(fig_var, use_container_width=True, key="sales_var_chart", config=plotly_cfg())
+    else:
+        st.info("Adjust the quote inputs and click Apply to calculate.")
 
 # === Fire Pixels (helpers) =========================================
 def fire_pixels_map_from_xml_bytes(xml_bytes: bytes) -> dict:
@@ -1644,14 +1748,12 @@ def apply_consumption_source(
             base = apply_mode_factors(base, group, factors)
     return base
 
-# =========================
-# Core: Simulador de custo/tempo
-# =========================
-def simulate(unit_mode:str, width_m:float, length_m:float, waste_pct:float, speed_m2h:float, ml_map_m2:dict,
-             ink_color_per_l_usd:float, ink_white_per_l_usd:float, fof_per_l_usd:float,
-             fabric_per_unit_usd:float, others_var_per_unit_usd:float, post_h:float,
-             fixed_per_unit_usd:float, show_time_metrics: bool = True):
-    """Accepts ml/m² map (not linear meter); converts when unit_mode == 'm'."""
+@st.cache_data(show_spinner=False)
+def _simulate_core(unit_mode:str, width_m:float, length_m:float, waste_pct:float, speed_m2h:float, ml_map_m2:dict,
+                   ink_color_per_l_usd:float, ink_white_per_l_usd:float, fof_per_l_usd:float,
+                   fabric_per_unit_usd:float, others_var_per_unit_usd:float, post_h:float,
+                   fixed_per_unit_usd:float) -> dict:
+    """Heavy portion of simulate() without Streamlit side-effects."""
     area_base_m2 = max(0.0, (width_m or 0.0) * (length_m or 0.0))
     length_base_m = max(0.0, (length_m or 0.0))
     area_w = area_base_m2 * (1 + (waste_pct or 0)/100.0)
@@ -1674,13 +1776,8 @@ def simulate(unit_mode:str, width_m:float, length_m:float, waste_pct:float, spee
     cost_other  = (others_var_per_unit_usd or 0) * qty_units
     cost_fixed  = (fixed_per_unit_usd or 0) * qty_units
 
-    time_print_h = (area_w / speed_m2h) if speed_m2h>0 else 0.0
+    time_print_h = (area_w / max(speed_m2h, 1e-9))
     time_total_h = time_print_h + (post_h or 0.0)
-    if show_time_metrics:
-        t1, t2 = st.columns(2)
-        t1.metric("Print time (h)", f"{time_print_h:.2f}")
-        t2.metric("Total time (h)",        f"{time_total_h:.2f}")
-
 
     total_cost = cost_ink + cost_fabric + cost_other + cost_fixed
     total_ml_per_unit = float(sum(ml_map_m2.values())) if unit_mode=="m2" else float(sum(ml_map_m2.values()))*float(width_m or 0.0)
@@ -1694,6 +1791,35 @@ def simulate(unit_mode:str, width_m:float, length_m:float, waste_pct:float, spee
         cost_ink=cost_ink, cost_media=cost_fabric, cost_other=cost_other,
         cost_fixed=cost_fixed, total_cost=total_cost
     )
+
+# =========================
+# Core: Simulador de custo/tempo
+# =========================
+def simulate(unit_mode:str, width_m:float, length_m:float, waste_pct:float, speed_m2h:float, ml_map_m2:dict,
+             ink_color_per_l_usd:float, ink_white_per_l_usd:float, fof_per_l_usd:float,
+             fabric_per_unit_usd:float, others_var_per_unit_usd:float, post_h:float,
+             fixed_per_unit_usd:float, show_time_metrics: bool = True):
+    """Accepts ml/m² map (not linear meter); converts when unit_mode == 'm'."""
+    res = _simulate_core(
+        unit_mode,
+        width_m,
+        length_m,
+        waste_pct,
+        speed_m2h,
+        ml_map_m2,
+        ink_color_per_l_usd,
+        ink_white_per_l_usd,
+        fof_per_l_usd,
+        fabric_per_unit_usd,
+        others_var_per_unit_usd,
+        post_h,
+        fixed_per_unit_usd,
+    )
+    if show_time_metrics:
+        t1, t2 = st.columns(2)
+        t1.metric("Print time (h)", f"{res['time_print_h']:.2f}")
+        t2.metric("Total time (h)", f"{res['time_total_h']:.2f}")
+    return res
 
 # ===== Fixed allocation resolver para Compare =====
 def resolve_fixed_per_unit_for_compare(
@@ -1957,6 +2083,7 @@ def run_compare_job(prefix: str, label: str, uploaded_zip_bytes: bytes, sym: str
 # =========================
 # A×B PDF — robusto a canais faltantes
 # =========================
+@st.cache_data(show_spinner=False)
 def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: List[float],
                                     mlA_map: dict, mlB_map: dict,
                                     labelA: str | None = None, labelB: str | None = None,
@@ -2167,7 +2294,12 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
 def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
     """Render inputs for a Compare job (A or B). Extracted from ui_compare_option_b for reuse."""
     files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=prefix)
-    with st.container():
+    with form_or_live(
+        f"{prefix}_inputs",
+        f"Apply {label}",
+        live_key=f"{prefix}_inputs_live",
+        live_help="Enable to update this block instantly.",
+    ) as do_compute:
 
         # XML selection
         xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
@@ -2336,16 +2468,17 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
                 pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
             with st_div("ink-fixed-grid"):
                 st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-
-        submitted = st.button(f"Apply {label}", key=f"{prefix}_apply_btn", type="primary")
-        if submitted:
-            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                sync_mode_scalers_from_prefix(prefix)
-            st.success(f"{label} saved. Now click 'Calculate A and B'.")
+    if do_compute:
+        if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+            sync_mode_scalers_from_prefix(prefix)
+        st.success(f"{label} saved. Now click 'Calculate A and B'.")
+    else:
+        st.caption("Adjust the inputs above and click Apply to use them.")
 
 # =========================
 # Single PDF — same visual language as A×B
 # =========================
+@st.cache_data(show_spinner=False)
 def build_single_pdf_matplotlib(channels: List[str], y: List[float], ml_map: dict,
                                 label: str | None = None,
                                 z_bytes: bytes | None = None,
@@ -4056,7 +4189,12 @@ def ui_single():
     # ---------- Job — Inputs (Apply), placed right below charts ----------
     def job_inputs_single(prefix: str, label: str):
         files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z, cache_ns="single")
-        with st.container():
+        with form_or_live(
+            f"{prefix}_inputs",
+            "Apply Job",
+            live_key=f"{prefix}_inputs_live",
+            live_help="Update this job automatically while editing.",
+        ) as do_compute:
             xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
             xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
             xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
@@ -4189,11 +4327,12 @@ def ui_single():
                 pv4.number_input("Taxes (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)), step=0.5, key=f"{prefix}_tax")
                 pv5.number_input("Fees/Terms (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)), step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-            submitted = st.button("Apply Job", key=f"{prefix}_apply_btn", type="primary")
-            if submitted:
-                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                    sync_mode_scalers_from_prefix(prefix)
-                st.success(f"{label} saved. Now click 'Calculate'.")
+        if do_compute:
+            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                sync_mode_scalers_from_prefix(prefix)
+            st.success(f"{label} saved. Now click 'Calculate'.")
+        else:
+            st.caption("Set the values above and click Apply to use them.")
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
@@ -4917,20 +5056,25 @@ def ui_compare():
             state_key_mode = f"{key_prefix}_mode_sel"
             idx_default = PRINT_MODE_OPTIONS.index(auto_mode) if auto_mode in PRINT_MODES else 0
 
-            mode_sel = st.selectbox(
-                "Print mode (affects time)",
-                PRINT_MODE_OPTIONS,
-                index=idx_default,
-                key=state_key_mode,
-                format_func=lambda m: mode_option_label(m, white_in_this_xml, UNIT, w_xml_def),
-                help="Used to compute time and, if enabled, consumption multipliers.",
-            )
-            st.caption(
-                f"Mode: **{PRINT_MODES[mode_sel]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in_this_xml else ''}** • "
-                f"Speed: **{speed_label(UNIT, PRINT_MODES[mode_sel]['speed'], w_xml_def)}**"
-            )
+            with form_or_live(
+                f"{key_prefix}_panel_inputs",
+                f"Calculate production — {label}",
+                live_key=f"{key_prefix}_panel_live",
+                live_help="Enable to recompute this job automatically.",
+            ) as do_compute:
+                mode_sel = st.selectbox(
+                    "Print mode (affects time)",
+                    PRINT_MODE_OPTIONS,
+                    index=idx_default,
+                    key=state_key_mode,
+                    format_func=lambda m: mode_option_label(m, white_in_this_xml, UNIT, w_xml_def),
+                    help="Used to compute time and, if enabled, consumption multipliers.",
+                )
+                st.caption(
+                    f"Mode: **{PRINT_MODES[mode_sel]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in_this_xml else ''}** • "
+                    f"Speed: **{speed_label(UNIT, PRINT_MODES[mode_sel]['speed'], w_xml_def)}**"
+                )
 
-            with st.container():
                 st.markdown("**Production dimensions (confirm/adjust)**")
                 a1, a2, a3 = st.columns(3)
                 width_m = a1.number_input(
@@ -5016,10 +5160,8 @@ def ui_compare():
                 terms_pct     = p4.number_input("Fees/Terms (%)", value=2.10, min_value=0.0, step=0.05, key=f"{key_prefix}_terms")
                 round_step    = float(p5.selectbox("Round to", ["0.01", "0.05", "0.10"], index=1, key=f"{key_prefix}_round"))
 
-                submitted = st.button(f"Calculate production — {label}", key=f"{key_prefix}_calc_btn", type="primary")
-
             result_payload = None
-            if submitted:
+            if do_compute:
                 try:
                     # 1) monta mapa de consumo, roda simulate() (como você já faz)
                     mlmap_use = apply_consumption_source(
