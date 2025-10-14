@@ -1,93 +1,29 @@
-from __future__ import annotations
-import time
-import streamlit as st
-st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
-
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
-from pathlib import Path
-import tempfile
-import os, pathlib
-os.environ.setdefault("HOME", "/tmp")
-pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
+from __future__ import annotations
 
-import importlib
-import types
 import unicodedata
 
 def _deaccent(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
 
-import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
+import io, re, math, zipfile, warnings, datetime as dt, textwrap
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, Tuple, List, TYPE_CHECKING
+from typing import Dict, Tuple, List
 
-import os as _os
+import numpy as np
+import pandas as pd
+from PIL import Image, ImageFile
 
+import streamlit as st
+import plotly.graph_objects as go
 
-class _LazyModule(types.ModuleType):
-    """Lazy loader that defers heavy imports until first attribute access."""
-    def __init__(self, module_name: str, attr_name: str | None = None):
-        super().__init__(module_name)
-        self._module_name = module_name
-        self._attr_name = attr_name
-        self._module = None
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
-    def _load(self):
-        if self._module is None:
-            module = importlib.import_module(self._module_name)
-            if self._attr_name:
-                module = getattr(module, self._attr_name)
-            self._module = module
-        return self._module
-
-    def __getattr__(self, item):
-        return getattr(self._load(), item)
-
-    def __setattr__(self, key, value):
-        if key.startswith("_"):
-            super().__setattr__(key, value)
-        else:
-            setattr(self._load(), key, value)
-
-    def __call__(self, *args, **kwargs):
-        return self._load()(*args, **kwargs)
-
-# Lazy heavy modules (resolved on demand)
-try:
-    import numpy as np  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover - fallback for minimal environments
-    np = _LazyModule("numpy")
-try:
-    import pandas as pd  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover
-    pd = _LazyModule("pandas")
-Image = _LazyModule("PIL.Image")
-ImageFile = _LazyModule("PIL.ImageFile")
-go = _LazyModule("plotly.graph_objects")
-plt = _LazyModule("matplotlib.pyplot")
-PdfPages = _LazyModule("matplotlib.backends.backend_pdf", "PdfPages")
-pio = _LazyModule("plotly.io")
-
-if TYPE_CHECKING:  # pragma: no cover - helps IDEs/type-checkers
-    import numpy as np  # type: ignore[no-redef]
-    import pandas as pd  # type: ignore[no-redef]
-    from PIL import Image as Image  # type: ignore[no-redef]
-    from PIL import ImageFile as ImageFile  # type: ignore[no-redef]
-    import plotly.graph_objects as go  # type: ignore[no-redef]
-    import matplotlib.pyplot as plt  # type: ignore[no-redef]
-    from matplotlib.backends.backend_pdf import PdfPages  # type: ignore[no-redef]
-    import plotly.io as pio  # type: ignore[no-redef]
-    from PIL.Image import Image as PILImageType
-else:
-    PILImageType = Any  # type: ignore[assignment]
-
-fragment_decorator = getattr(st, "fragment", None)
-if fragment_decorator is None:
-    fragment_decorator = getattr(st, "experimental_fragment", None)
-
+import plotly.io as pio
 pio.templates.default = "plotly_white"   # base clara; gráficos específicos também usam "plotly_white"
 
 # ---------------- Config & CSS (light, professional theme) ----------------
@@ -104,31 +40,7 @@ _icon = _load_asset_image("page_icon") or "🖨️"
 # Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
-# st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
-# 
-# # ---------- Fast/Safe boot block ----------
-SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
-try:
-    _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
-    _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
-    SAFE_MODE = bool(_toggle_val)
-except Exception:
-    pass
-
-def safe_section(title, fn):
-    try:
-        with st.expander(title, expanded=True):
-            fn()
-    except Exception as e:
-        st.error(f"⚠️ {title} falhou: {e}")
-        if st.checkbox(f"Mostrar detalhes ({title})", key=f"tb_{title}"):
-            st.exception(e)
-
-def _mpl():
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
-    return plt, PdfPages
-# ---------- End fast/safe block ----------
+st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
 
 # Pillow safety
 Image.MAX_IMAGE_PIXELS = None
@@ -950,7 +862,7 @@ def ui_sales_quick_quote():
             fx=(FX if OUTC=="Local" else 1.0),
             title="Break-even — Quick quote",
         )
-        st.plotly_chart(fig_be, use_container_width=True, key="sales_be_chart", config=plotly_cfg())
+        st.plotly_chart(fig_be, use_container_width=True, key="sales_be_chart")
         try:
             sym_out = (SYM if OUTC=="Local" else "US$")
             fx_out  = (FX if OUTC=="Local" else 1.0)
@@ -985,8 +897,8 @@ def ui_sales_quick_quote():
             fig_var.update_layout(template="plotly_white", height=320, margin=dict(l=10,r=10,t=30,b=10), yaxis_title=f"{SYM if OUTC=='Local' else 'US$'} / {unit_lbl}")
 
             cc1, cc2 = st.columns(2)
-            with cc1: st.subheader("Variable × Fixed (per unit)"); st.plotly_chart(fig_vf, use_container_width=True, key="sales_vf_chart", config=plotly_cfg())
-            with cc2: st.subheader("Variable breakdown (per unit)"); st.plotly_chart(fig_var, use_container_width=True, key="sales_var_chart", config=plotly_cfg())
+            with cc1: st.subheader("Variable × Fixed (per unit)"); st.plotly_chart(fig_vf, use_container_width=True, key="sales_vf_chart")
+            with cc2: st.subheader("Variable breakdown (per unit)"); st.plotly_chart(fig_var, use_container_width=True, key="sales_var_chart")
 
 # === Fire Pixels (helpers) =========================================
 def fire_pixels_map_from_xml_bytes(xml_bytes: bytes) -> dict:
@@ -997,16 +909,17 @@ def fire_pixels_map_from_xml_bytes(xml_bytes: bytes) -> dict:
         out[normalize_sep_name(sep)] = float(px or 0.0)
     return out
 
-def fire_pixels_union_all_xmls(zbytes: bytes, cache_ns: str | None = None) -> dict:
+def fire_pixels_union_all_xmls(zbytes: bytes) -> dict:
     """Sum fire pixels across all XMLs in the ZIP (useful if the selected XML only has FOF/White)."""
     out = {}
-    _, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
-    for xp in xmls:
-        mp = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
-        for k, v in (mp or {}).items():
-            if not k:
-                continue
-            out[k] = out.get(k, 0.0) + float(v or 0.0)
+    _, xmls, *_ = read_zip_listing(zbytes)
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        for xp in xmls:
+            mp = fire_pixels_map_from_xml_bytes(z.read(xp))
+            for k, v in (mp or {}).items():
+                if not k: 
+                    continue
+                out[k] = out.get(k, 0.0) + float(v or 0.0)
     return out
 
 # =========================
@@ -1019,26 +932,27 @@ def has_color_channels(ml_map: dict) -> bool:
             return True
     return False
 
-def ml_map_union_all_xmls(zbytes: bytes, cache_ns: str | None = None) -> dict:
+def ml_map_union_all_xmls(zbytes: bytes) -> dict:
     out = {}
-    files, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
-    for xp in xmls:
-        mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
-        for k, v in (mm or {}).items():
-            if not k:
-                continue
-            out[k] = out.get(k, 0.0) + float(v or 0.0)
+    files, xmls, *_ = read_zip_listing(zbytes)
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        for xp in xmls:
+            mm = ml_per_m2_from_xml_bytes(z.read(xp))
+            for k, v in (mm or {}).items():
+                if not k: continue
+                out[k] = out.get(k, 0.0) + float(v or 0.0)
     return out
-def pick_first_with_colors(zbytes: bytes, cache_ns: str | None = None) -> dict:
+def pick_first_with_colors(zbytes: bytes) -> dict:
     """Return ml/m² map from the first XML in the ZIP that contains any color channel (not just White/FOF)."""
-    _, xmls, *_ = read_zip_listing(zbytes, cache_ns=cache_ns)
-    for xp in xmls:
-        try:
-            mm = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns))
-        except Exception:
-            mm = {}
-        if has_color_channels(mm):
-            return mm
+    _, xmls, *_ = read_zip_listing(zbytes)
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        for xp in xmls:
+            try:
+                mm = ml_per_m2_from_xml_bytes(z.read(xp))
+            except Exception:
+                mm = {}
+            if has_color_channels(mm):
+                return mm
     return {}
 
 def is_probably_tiff(raw: bytes) -> bool:
@@ -1051,12 +965,9 @@ def strip_appledouble(path: str) -> str:
         return path.rsplit("/",1)[0] + "/" + base[2:] if "/" in path else base[2:]
     return path
 
-def _zip_digest(zbytes: bytes) -> str:
-    return hashlib.sha1(zbytes).hexdigest()
-
-@st.cache_data(max_entries=128, ttl=3600, show_spinner=False)
-def _cached_zip_listing(zip_key: str, zbytes: bytes):
-    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+@st.cache_data(show_spinner=False)
+def read_zip_listing(zfile_bytes: bytes):
+    with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
         files = [n for n in z.namelist() if not n.endswith("/")]
     xmls = [n for n in files if n.lower().endswith(".xml")]
     jpgs = [n for n in files if n.lower().endswith((".jpg",".jpeg")) and not n.split("/")[-1].startswith("._")]
@@ -1064,86 +975,12 @@ def _cached_zip_listing(zip_key: str, zbytes: bytes):
     ad = any(n.split("/")[-1].startswith("._") for n in files)
     return files, xmls, jpgs, tifs, ad
 
-def read_zip_listing(zfile_bytes: bytes, cache_ns: str | None = None):
-    key = f"{cache_ns or 'zip'}_{_zip_digest(zfile_bytes)}"
-    return _cached_zip_listing(key, zfile_bytes)
-
-@st.cache_data(max_entries=512, ttl=3600, show_spinner=False)
-def _cached_zip_entry(zip_key: str, inner_path: str, zbytes: bytes) -> bytes:
-    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+@st.cache_data(show_spinner=False)
+def read_bytes_from_zip(zfile_bytes: bytes, inner_path: str) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(zfile_bytes)) as z:
         return z.read(inner_path)
 
-def read_bytes_from_zip(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
-    key = f"{cache_ns or 'zip'}_{_zip_digest(zfile_bytes)}"
-    return _cached_zip_entry(key, inner_path, zfile_bytes)
-
-def _get_preview_raw(zfile_bytes: bytes, inner_path: str, cache_ns: str | None = None) -> bytes:
-    raw = read_bytes_from_zip(zfile_bytes, inner_path, cache_ns)
-    if not is_probably_tiff(raw):
-        alt = strip_appledouble(inner_path)
-        if alt != inner_path:
-            try:
-                raw_alt = read_bytes_from_zip(zfile_bytes, alt, cache_ns)
-                if is_probably_tiff(raw_alt):
-                    raw = raw_alt
-            except KeyError:
-                pass
-    return raw
-
-@st.cache_data(max_entries=256, ttl=3600, show_spinner=False)
-def make_preview_thumb(raw_img: bytes, target_w: int, target_h: int, *, fill: bool, trim: bool, max_side: int) -> bytes:
-    """Return a JPEG thumbnail (bytes) ready for st.image rendering."""
-    im = Image.open(io.BytesIO(raw_img))
-    if getattr(im, "n_frames", 1) > 1:
-        try:
-            im.seek(0)
-        except Exception:
-            pass
-    try:
-        bigger = max(im.size)
-        factor = max(1, int(bigger / (max_side * 2)))
-        if factor > 1 and hasattr(im, "reduce"):
-            im = im.reduce(factor)
-    except Exception:
-        pass
-    if im.mode == "P":
-        im = im.convert("RGB")
-    elif im.mode == "1":
-        im = im.convert("L")
-    if trim:
-        im = trim_margins(im)
-    if fill:
-        im = coverbox(im, target_w, target_h)
-    else:
-        im = letterbox(im, target_w, target_h)
-    buf = io.BytesIO()
-    save_kwargs = {"format": "JPEG", "quality": 85, "optimize": True}
-    if im.mode == "RGBA":
-        im = im.convert("RGB")
-    im.save(buf, **save_kwargs)
-    return buf.getvalue()
-
-@fragment_decorator if fragment_decorator else (lambda fn: fn)
-def preview_fragment(fragment_key: str, zip_bytes: bytes | None, inner_path: str | None, *, width: int, height: int, fill_flag: bool, trim_flag: bool, max_side: int, caption: str):
-    if not zip_bytes or not inner_path:
-        st.info("Preview unavailable for this selection.")
-        return
-    try:
-        with st.spinner("Carregando preview…"):
-            raw = _get_preview_raw(zip_bytes, inner_path, cache_ns=fragment_key)
-            thumb_bytes = make_preview_thumb(
-                raw,
-                width,
-                height,
-                fill=fill_flag,
-                trim=trim_flag,
-                max_side=max_side,
-            )
-        st.image(thumb_bytes, caption=caption, width=width)
-    except Exception as exc:
-        st.error(f"Preview failed: {exc}")
-
-def letterbox(im: PILImageType, target_w: int, target_h: int, bg=(245,247,251)) -> PILImageType:
+def letterbox(im: Image.Image, target_w: int, target_h: int, bg=(245,247,251)) -> Image.Image:
     if im.mode not in ("RGB","RGBA","L"):
         im = im.convert("RGB")
     im_copy = im.copy()
@@ -1153,8 +990,17 @@ def letterbox(im: PILImageType, target_w: int, target_h: int, bg=(245,247,251)) 
     canvas.paste(im_copy, (x,y))
     return canvas
 
-def load_preview_light(zfile_bytes: bytes, inner_path: str, max_side: int = 640, cache_ns: str | None = None) -> PILImageType:
-    raw = _get_preview_raw(zfile_bytes, inner_path, cache_ns)
+@st.cache_data(show_spinner=False)
+def load_preview_light(zfile_bytes: bytes, inner_path: str, max_side: int = 640) -> Image.Image:
+    raw = read_bytes_from_zip(zfile_bytes, inner_path)
+    if not is_probably_tiff(raw):
+        alt = strip_appledouble(inner_path)
+        if alt != inner_path:
+            try:
+                raw_alt = read_bytes_from_zip(zfile_bytes, alt)
+                if is_probably_tiff(raw_alt): raw = raw_alt
+            except KeyError:
+                pass
     im = Image.open(io.BytesIO(raw))
     if getattr(im, "n_frames", 1) > 1:
         try: im.seek(0)
@@ -1171,7 +1017,7 @@ def load_preview_light(zfile_bytes: bytes, inner_path: str, max_side: int = 640,
     im.thumbnail((max_side, max_side), Image.LANCZOS)
     return im
 
-def coverbox(im: PILImageType, target_w: int, target_h: int) -> PILImageType:
+def coverbox(im: Image.Image, target_w: int, target_h: int) -> Image.Image:
     """Resize to completely fill the target box (center-crop if needed)."""
     if im.mode not in ("RGB","RGBA","L"):
         im = im.convert("RGB")
@@ -1187,6 +1033,22 @@ def coverbox(im: PILImageType, target_w: int, target_h: int) -> PILImageType:
     y1 = y0 + target_h
     return im_resized.crop((x0, y0, x1, y1))
 
+def _img_to_data_uri(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = buf.getvalue()
+    import base64
+    return f"data:image/png;base64,{base64.b64encode(b64).decode('ascii')}"
+
+def render_img_box_html(img: Image.Image, w: int, h: int, alt: str = ""):
+    uri = _img_to_data_uri(img)
+    html = f"""
+    <div style="width:{w}px;height:{h}px;overflow:hidden;border-radius:10px;background:#f5f7fb">
+      <img src="{uri}" alt="{alt}" style="width:100%;height:100%;object-fit:cover;display:block;"/>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 # Small inline hint icon for headings (native browser tooltip)
 def render_title_with_hint(title_text: str, hint: str):
     safe_title = title_text.replace("<", "&lt;").replace(">", "&gt;")
@@ -1196,47 +1058,7 @@ def render_title_with_hint(title_text: str, hint: str):
         unsafe_allow_html=True,
     )
 
-# Default Plotly config (hide logo, enable PNG export)
-def plotly_cfg():
-    try:
-        return {
-            "displaylogo": False,
-            "toImageButtonOptions": {"format": "png", "scale": 2},
-        }
-    except Exception:
-        return {}
-
-# Session tools: reset heavy keys and clear caches
-def _reset_heavy_session_state():
-    try:
-        keys = list(st.session_state.keys())
-        patterns = ["_zip_bytes", "_panels", "_legend", "batch_"]
-        for k in keys:
-            if any(p in k for p in patterns):
-                try:
-                    del st.session_state[k]
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-def render_tools_sidebar():
-    try:
-        with st.sidebar:
-            st.markdown("### Tools")
-            if st.button("Reset session", key="__btn_reset_session"):
-                _reset_heavy_session_state()
-                st.success("Session reset.")
-            if st.button("Clear caches", key="__btn_clear_caches"):
-                try:
-                    st.cache_data.clear()
-                except Exception:
-                    pass
-                st.success("Caches cleared.")
-    except Exception:
-        pass
-
-def trim_margins(im: PILImageType, threshold: int = 245, margin_px: int = 2) -> PILImageType:
+def trim_margins(im: Image.Image, threshold: int = 245, margin_px: int = 2) -> Image.Image:
     """Auto-trim near-white borders. threshold 0-255: larger → more aggressive.
     Only removes uniform light margins; returns original if no content bbox is found."""
     try:
@@ -1333,9 +1155,7 @@ def parse_xml(xml_bytes: bytes):
     height = f(root.findtext("Height","0"))    # cm
     area_m2 = (width/100.0)*(height/100.0)
 
-    ml_node = root.find("NumberOfMlPerSeparation")
-    if ml_node is None:
-        ml_node = root.find("NumberOfMlPerSeperation")
+    ml_node = root.find("NumberOfMlPerSeparation") or root.find("NumberOfMlPerSeperation")
     ml_per_sep = {}
     if ml_node is not None:
         for child in ml_node:
@@ -1762,14 +1582,15 @@ def run_compare_job(prefix: str, label: str, uploaded_zip_bytes: bytes, sym: str
     other_vars_df = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name":"—","Value":0.0}]), ["Name","Value"])
 
     # XML do ZIP
-    xml_inner_path = st.session_state.get(k_xml)
-    if not xml_inner_path:
-        _, xmls, *_ = read_zip_listing(uploaded_zip_bytes, cache_ns=prefix)
-        xml_inner_path = xmls[0] if xmls else None
-    if not xml_inner_path:
-        st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
-        return
-    xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path, cache_ns=prefix)
+    with zipfile.ZipFile(io.BytesIO(uploaded_zip_bytes)) as z:
+        xml_inner_path = st.session_state.get(k_xml)
+        if not xml_inner_path:
+            _, xmls, *_ = read_zip_listing(uploaded_zip_bytes)
+            xml_inner_path = xmls[0] if xmls else None
+        if not xml_inner_path:
+            st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
+            return
+        xml_bytes = z.read(xml_inner_path)
 
     # Fatores (usa os sliders compartilhados)
     factors = get_mode_factors_from_state()
@@ -1787,7 +1608,7 @@ def run_compare_job(prefix: str, label: str, uploaded_zip_bytes: bytes, sym: str
 
     # Fallback: se a fonte é XML e o mapa tem só White/FOF, tenta primeiro XML com cores
     if str(st.session_state.get(k_cons, "XML (exact)")).lower().startswith("xml") and not has_color_channels(mlmap_use):
-        fb = pick_first_with_colors(uploaded_zip_bytes, cache_ns=prefix)
+        fb = pick_first_with_colors(uploaded_zip_bytes)
         if fb:
             if "mode" in str(st.session_state.get(k_cons, "")).lower():
                 group_key = MODE_GROUP.get(st.session_state.get(k_mode), "")
@@ -2094,178 +1915,176 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
 # =========================
 def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
     """Render inputs for a Compare job (A or B). Extracted from ui_compare_option_b for reuse."""
-    files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=prefix)
-    submitted = False
-    with st.form(key=f"{prefix}_form"):
-    
-        # XML selection
-        xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
-        xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
-        xml_bytes_hdr = read_bytes_from_zip(zbytes, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns=prefix)
-        w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
-    
-        # Print mode (lock when XML exact)
-        auto_mode = infer_mode_from_xml(xml_bytes_hdr)
-        white_in = has_white_in_xml(xml_bytes_hdr)
-        PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
-        # Resolve a safe default mode key
-        mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-        idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
-    
-        # Consumption source first, so we can decide whether to lock the print mode
-        cons_src = st.radio(
-            "Consumption source (ml/m²)",
-            ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
-            index=0,
-            key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
-        )
-    
-        lock_mode = str(cons_src).startswith("XML (exact)")
-        # Ensure session state holds a valid option; otherwise Streamlit shows "Choose an option"
-        if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
-            st.session_state[f"{prefix}_mode_sel"] = mode_default
-    
-        mode_sel = st.selectbox(
-            "Print mode",
-            PRINT_MODE_OPTIONS,
-            index=idx_mode,
-            key=f"{prefix}_mode_sel",
-            format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
-            disabled=lock_mode,
-            help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
-        )
-        # Safe effective mode (avoid KeyError when widget returns None)
-        # Effective mode with robust fallback
-        mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
-        mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-        if mode_for_caption in PRINT_MODES:
-            st.caption(
-                f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**"
-            )
-        # Resolution caption — fall back to mode_for_caption when auto inference is unavailable
-        res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
-        if res_key in PRINT_MODES:
-            st.caption(
-                f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**"
-            )
-    
-        # Geometry & waste
-        with st_div("ink-fixed-grid"):
-            a1, a2, a3 = st.columns(3)
-            a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m",
-                            help="Printable width used for this job.")
-            a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m",
-                            help="Length to be produced for this job.")
-            a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste",
-                            help="Allowance for setup, trims and reprints.")
-    
-        # Details for source
-        if cons_src.startswith("XML + mode multiplier"):
-            st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
-            render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
-        elif cons_src == "Manual":
-            with st_div("ink-fixed-grid"):
-                mcols = st.columns(3)
-                mcols[0].number_input(
-                f"Manual — Color (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_c"
-            )
-                mcols[1].number_input(
-                f"Manual — White (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_w"
-            )
-                mcols[2].number_input(
-                f"Manual — FOF (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_f"
-            )
-    
-        # Variable labor + other variables
-        lab1, _ = st.columns([1,1])
-        lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h",
-                          help="Hourly variable labor. Do not use if it is already included in monthly fixed costs.")
-        st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
-        _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
-        df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
-        st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
-    
-        # Fixed costs & pricing
-        fix_mode = st.radio(
-            "Fixed costs mode",
-            ["Direct per unit", "Monthly helper"],
-            index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1,
-            horizontal=True,
-            key=f"{prefix}_fix_mode",
-            help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.",
-        )
-        if fix_mode.startswith("Direct"):
-            with st_div("ink-fixed-grid"):
-                mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-                mv1.number_input(
-                    f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
-                    min_value=0.0,
-                    value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
-                    step=0.05,
-                    key=f"{prefix}_fixed_unit",
-                    help="Fixed cost per unit if not using the monthly helper.",
-                )
-                mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price",
-                                 help="Selling price per unit in the chosen unit.")
-                mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin",
-                                 help="Target markup over cost before taxes and fees.")
-                mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax",
-                                 help="Taxes or withholdings applied to price.")
-                mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms",
-                                 help="Payment terms, card fees, financing, etc.")
-            # Round to — keep within grid styling to align labels across A & B
-            with st_div("ink-fixed-grid"):
-                rcol = st.columns(1)[0]
-                rcol.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round",
-                                help="Rounding step for suggested price.")
-        else:
-            st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
-            with st_div("ink-fixed-grid"):
-                fx1, fx2, fx3, fx4 = st.columns(4)
-                fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
-                fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
-                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
-                fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
-            st.caption("Other fixed (monthly)")
-            _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
-            df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
-            st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
-            # Monthly production helper
-            prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
-            # Allocation
-            sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
-            total_fix_m = (
-                float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
-                + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
-                + float(sum_others)
-            )
-            alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
-            st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
-            st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
-            # Pricing controls
-            with st_div("ink-fixed-grid"):
-                pv2, pv3, pv4, pv5 = st.columns(4)
-                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
-                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
-                pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
-                pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
-            with st_div("ink-fixed-grid"):
-                st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-    
-            submitted = st.form_submit_button(f"Apply {label}")
+    files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes)
 
-        if submitted:
-            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                sync_mode_scalers_from_prefix(prefix)
-            st.success(f"{label} saved. Now click 'Calculate A and B'.")
+    # XML selection
+    xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
+    xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        xml_bytes_hdr = z.read(st.session_state.get(f"{prefix}_xml_sel", xml_sel))
+    w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
+
+    # Print mode (lock when XML exact)
+    auto_mode = infer_mode_from_xml(xml_bytes_hdr)
+    white_in = has_white_in_xml(xml_bytes_hdr)
+    PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
+    # Resolve a safe default mode key
+    mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+    idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
+
+    # Consumption source first, so we can decide whether to lock the print mode
+    cons_src = st.radio(
+        "Consumption source (ml/m²)",
+        ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
+        index=0,
+        key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
+    )
+
+    lock_mode = str(cons_src).startswith("XML (exact)")
+    # Ensure session state holds a valid option; otherwise Streamlit shows "Choose an option"
+    if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
+        st.session_state[f"{prefix}_mode_sel"] = mode_default
+
+    mode_sel = st.selectbox(
+        "Print mode",
+        PRINT_MODE_OPTIONS,
+        index=idx_mode,
+        key=f"{prefix}_mode_sel",
+        format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
+        disabled=lock_mode,
+        help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
+    )
+    # Safe effective mode (avoid KeyError when widget returns None)
+    # Effective mode with robust fallback
+    mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
+    mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+    if mode_for_caption in PRINT_MODES:
+        st.caption(
+            f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**"
+        )
+    # Resolution caption — fall back to mode_for_caption when auto inference is unavailable
+    res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
+    if res_key in PRINT_MODES:
+        st.caption(
+            f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**"
+        )
+
+    # Geometry & waste
+    with st_div("ink-fixed-grid"):
+        a1, a2, a3 = st.columns(3)
+        a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m",
+                        help="Printable width used for this job.")
+        a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m",
+                        help="Length to be produced for this job.")
+        a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste",
+                        help="Allowance for setup, trims and reprints.")
+
+    # Details for source
+    if cons_src.startswith("XML + mode multiplier"):
+        st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
+        render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
+    elif cons_src == "Manual":
+        with st_div("ink-fixed-grid"):
+            mcols = st.columns(3)
+            mcols[0].number_input(
+            f"Manual — Color (ml{per_unit('m2')})",
+            value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
+            min_value=0.0, step=0.1, key=f"{prefix}_man_c"
+        )
+            mcols[1].number_input(
+            f"Manual — White (ml{per_unit('m2')})",
+            value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
+            min_value=0.0, step=0.1, key=f"{prefix}_man_w"
+        )
+            mcols[2].number_input(
+            f"Manual — FOF (ml{per_unit('m2')})",
+            value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
+            min_value=0.0, step=0.1, key=f"{prefix}_man_f"
+        )
+
+    # Variable labor + other variables
+    lab1, _ = st.columns([1,1])
+    lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h",
+                      help="Hourly variable labor. Do not use if it is already included in monthly fixed costs.")
+    st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
+    _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
+    df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
+    st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
+
+    # Fixed costs & pricing
+    fix_mode = st.radio(
+        "Fixed costs mode",
+        ["Direct per unit", "Monthly helper"],
+        index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1,
+        horizontal=True,
+        key=f"{prefix}_fix_mode",
+        help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.",
+    )
+    if fix_mode.startswith("Direct"):
+        with st_div("ink-fixed-grid"):
+            mv1, mv2, mv3, mv4, mv5 = st.columns(5)
+            mv1.number_input(
+                f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
+                min_value=0.0,
+                value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
+                step=0.05,
+                key=f"{prefix}_fixed_unit",
+                help="Fixed cost per unit if not using the monthly helper.",
+            )
+            mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price",
+                             help="Selling price per unit in the chosen unit.")
+            mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin",
+                             help="Target markup over cost before taxes and fees.")
+            mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax",
+                             help="Taxes or withholdings applied to price.")
+            mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms",
+                             help="Payment terms, card fees, financing, etc.")
+        # Round to — keep within grid styling to align labels across A & B
+        with st_div("ink-fixed-grid"):
+            rcol = st.columns(1)[0]
+            rcol.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round",
+                            help="Rounding step for suggested price.")
+    else:
+        st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
+        with st_div("ink-fixed-grid"):
+            fx1, fx2, fx3, fx4 = st.columns(4)
+            fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
+            fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
+            fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
+            fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
+        st.caption("Other fixed (monthly)")
+        _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+        df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
+        st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
+        # Monthly production helper
+        prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
+        # Allocation
+        sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
+        total_fix_m = (
+            float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
+            + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
+            + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
+            + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
+            + float(sum_others)
+        )
+        alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
+        st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
+        st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
+        # Pricing controls
+        with st_div("ink-fixed-grid"):
+            pv2, pv3, pv4, pv5 = st.columns(4)
+            pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
+            pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
+            pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
+            pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
+        with st_div("ink-fixed-grid"):
+            st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
+
+    applied = st.button(f"Apply {label}", key=f"{prefix}_apply")
+    if applied:
+        if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+            sync_mode_scalers_from_prefix(prefix)
+        st.success(f"{label} saved. Now click 'Calculate A and B'.")
 
 # =========================
 # Single PDF — same visual language as A×B
@@ -2480,9 +2299,10 @@ def ui_compare_option_b():
             key=f"{prefix}_xml_legend",
         )
         mlm2 = {}
-        mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix))
+        with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+            mlm2 = ml_per_m2_from_xml_bytes(z.read(xml_for_legend))
         if not has_color_channels(mlm2):
-            fb = pick_first_with_colors(zbytes, cache_ns=prefix)
+            fb = pick_first_with_colors(zbytes)
             if fb:
                 mlm2 = fb
         # guarda para o gráfico global A×B
@@ -2494,25 +2314,35 @@ def ui_compare_option_b():
         leftC, rightC = st.columns([1.15, 1.0])
         with leftC:
             path, _ = choose_path(selected_channel, jpgs, chan_map)
-            fill_flag = bool(st.session_state.get("cmp_fill_preview_jpg", True)) if selected_channel == "Preview" else bool(st.session_state.get("cmp_fill_preview", True))
-            trim_flag = bool(st.session_state.get("cmp_trim_channels", True)) if selected_channel != "Preview" else False
-            preview_fragment(
-                f"{prefix}_preview",
-                zbytes,
-                path,
-                width=prev_w,
-                height=prev_h,
-                fill_flag=fill_flag,
-                trim_flag=trim_flag,
-                max_side=int(prev_w * 1.35),
-                caption=path or "Preview",
-            )
-            if selected_channel != "Preview" and mlm2:
-                v = mlm2.get(selected_channel)
-                if v is not None:
-                    st.caption(f"**{selected_channel}**: {v:.2f} ml/m²")
-            if mlm2:
-                st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
+            if path:
+                try:
+                    img = load_preview_light(zbytes, path, max_side=int(prev_w * 1.35))
+                    if selected_channel == "Preview":
+                        if bool(st.session_state.get("cmp_fill_preview_jpg", True)):
+                            img = coverbox(img, prev_w, prev_h)
+                            render_img_box_html(img, prev_w, prev_h, alt=path)
+                        else:
+                            img = letterbox(img, prev_w, prev_h)
+                            st.image(img, caption=path, use_container_width=False, width=prev_w)
+                    else:
+                        if bool(st.session_state.get("cmp_trim_channels", True)):
+                            img = trim_margins(img)
+                        if bool(st.session_state.get("cmp_fill_preview", True)):
+                            img = coverbox(img, prev_w, prev_h)
+                            render_img_box_html(img, prev_w, prev_h, alt=path)
+                        else:
+                            img = letterbox(img, prev_w, prev_h)
+                            st.image(img, caption=path, use_container_width=False, width=prev_w)
+                    if selected_channel != "Preview" and mlm2:
+                        v = mlm2.get(selected_channel)
+                        if v is not None:
+                            st.caption(f"**{selected_channel}**: {v:.2f} ml/m²")
+                    if mlm2:
+                        st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
+                except Exception as e:
+                    st.error(f"Preview failed: {e}")
+            else:
+                st.info(f"This job does not contain '{selected_channel}'.")
         with rightC:
             st.empty()
 
@@ -2543,16 +2373,17 @@ def ui_compare_option_b():
                     yaxis_title="ml/m²",
                     xaxis_title="Channel",
                 )
-                st.plotly_chart(fig_ch, use_container_width=True, key=f"{prefix}_ml_chart", config=plotly_cfg())
+                st.plotly_chart(fig_ch, use_container_width=True, key=f"{prefix}_ml_chart")
             else:
                 st.info("Select an XML to display the chart.")
 
         # --- Fire pixels per channel (K) ---
         pxm2 = {}
-        try:
-            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix))
-        except Exception:
-            pxm2 = {}
+        with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+            try:
+                pxm2 = fire_pixels_map_from_xml_bytes(z.read(xml_for_legend))
+            except Exception:
+                pxm2 = {}
 
         if show_px:
             render_title_with_hint(
@@ -2574,7 +2405,7 @@ def ui_compare_option_b():
                     yaxis_title="K pixels",
                     xaxis_title="Channel",
                 )
-                st.plotly_chart(fig_px, use_container_width=True, key=f"{prefix}_px_chart", config=plotly_cfg())
+                st.plotly_chart(fig_px, use_container_width=True, key=f"{prefix}_px_chart")
             else:
                 st.info("This XML does not contain 'NumberOfFirePixelsPerSeparation'.")
 
@@ -2584,8 +2415,12 @@ def ui_compare_option_b():
         # Read original dims from the selected XML
         w0 = h0 = 0.0
         try:
-            xml_bytes_sz = read_bytes_from_zip(zbytes, xml_for_legend, cache_ns=prefix)
-            w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
+            with zipfile.ZipFile(io.BytesIO(zbytes)) as zsz:
+                try:
+                    xml_bytes_sz = zsz.read(xml_for_legend)
+                    w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -2772,8 +2607,8 @@ def ui_compare_option_b():
     if "cmp_job_show_px" not in st.session_state:
         st.session_state["cmp_job_show_px"] = True
     tj1, tj2, tj3 = st.columns(3)
-    tj1.checkbox("Show per-job ml/m² charts", key="cmp_job_show_ml")
-    tj2.checkbox("Show per-job pixels charts (K)", key="cmp_job_show_px")
+    tj1.checkbox("Show per-job ml/m² charts", value=st.session_state.get("cmp_job_show_ml", True), key="cmp_job_show_ml")
+    tj2.checkbox("Show per-job pixels charts (K)", value=st.session_state.get("cmp_job_show_px", True), key="cmp_job_show_px")
     tj3.checkbox("Show per-job values on bars", value=st.session_state.get("cmp_job_show_vals", False), key="cmp_job_show_vals")
 
     # Render dos dois blocos (A e B)
@@ -2803,6 +2638,7 @@ def ui_compare_option_b():
         )
         ctrl2.checkbox(
             "Show insights",
+            value=st.session_state.get("cmp_show_insights", True),
             key="cmp_show_insights",
         )
 
@@ -2880,7 +2716,7 @@ def ui_compare_option_b():
         if "cmp_combined_show_ml" not in st.session_state:
             st.session_state["cmp_combined_show_ml"] = True
         if st.session_state.get("cmp_combined_show_ml", True):
-            st.plotly_chart(fig_cmp, use_container_width=True, key="cmp_combined_ml_chart", config=plotly_cfg())
+            st.plotly_chart(fig_cmp, use_container_width=True, key="cmp_combined_ml_chart")
 
         # Heatmap option for compact comparison
         if st.checkbox("Show per-channel heatmap", value=st.session_state.get("cmp_show_heatmap", False), key="cmp_show_heatmap"):
@@ -2888,7 +2724,7 @@ def ui_compare_option_b():
             z = np.array([yA_ord, yB_ord])
             fig_h = go.Figure(data=go.Heatmap(z=z, x=ch_order, y=[nameA, nameB], colorscale='Blues', colorbar=dict(title=y_label)))
             fig_h.update_layout(template='plotly_white', height=h_cmp, margin=dict(l=10,r=10,t=30,b=10), xaxis_title='Channel', yaxis_title='File')
-            st.plotly_chart(fig_h, use_container_width=True, key="cmp_heatmap_chart", config=plotly_cfg())
+            st.plotly_chart(fig_h, use_container_width=True, key="cmp_heatmap_chart")
 
         # Key insights (below the chart) — optional via toggle
         if st.session_state.get("cmp_show_insights", True):
@@ -2900,10 +2736,6 @@ def ui_compare_option_b():
 
         # Optional PDF export of this comparison (respects the current ordering)
         # PDF layout controls
-        if "cmp_pdf_show_comp" not in st.session_state:
-            st.session_state["cmp_pdf_show_comp"] = True
-        if "cmp_pdf_show_totals" not in st.session_state:
-            st.session_state["cmp_pdf_show_totals"] = True
         cpdf1, cpdf2, cpdf3 = st.columns([1.2, 1.0, 1.2])
         size_opt = cpdf1.selectbox(
             "PDF preview size",
@@ -2912,22 +2744,21 @@ def ui_compare_option_b():
             key="cmp_pdf_size",
             help="Defines thumbnail size and chart/table layout."
         )
-        show_comp = cpdf2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
-        show_totals = cpdf3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
+        show_comp = cpdf2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
+        show_totals = cpdf3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
 
         try:
             nameA = st.session_state.get("cmpA_zip_name", "Job A")
             nameB = st.session_state.get("cmpB_zip_name", "Job B")
-            with st.spinner("Building A×B PDF…"):
-                pdf_bytes = build_comparison_pdf_matplotlib(
-                    ch_order, yA_ord, yB_ord, mlA_map, mlB_map,
-                    labelA=nameA, labelB=nameB,
-                    zA_bytes=zA, zB_bytes=zB,
-                    selected_channel=st.session_state.get("cmp_chan_sel", "Preview"),
-                    show_comp=show_comp,
-                    preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
-                    show_totals=show_totals,
-                )
+            pdf_bytes = build_comparison_pdf_matplotlib(
+                ch_order, yA_ord, yB_ord, mlA_map, mlB_map,
+                labelA=nameA, labelB=nameB,
+                zA_bytes=zA, zB_bytes=zB,
+                selected_channel=st.session_state.get("cmp_chan_sel", "Preview"),
+                show_comp=show_comp,
+                preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
+                show_totals=show_totals,
+            )
             st.download_button("A×B PDF", data=pdf_bytes, file_name="compare_AxB.pdf", mime="application/pdf")
         except Exception as e:
             st.info(f"PDF not available: {e}")
@@ -3019,14 +2850,15 @@ def ui_compare_option_b():
         other_vars_df = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name":"—","Value":0.0}]), ["Name","Value"])
 
         # XML do ZIP
-        xml_inner_path = st.session_state.get(k_xml)
-        if not xml_inner_path:
-            _, xmls, *_ = read_zip_listing(uploaded_zip_bytes, cache_ns=prefix)
-            xml_inner_path = xmls[0] if xmls else None
-        if not xml_inner_path:
-            st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
-            return
-        xml_bytes = read_bytes_from_zip(uploaded_zip_bytes, xml_inner_path, cache_ns=prefix)
+        with zipfile.ZipFile(io.BytesIO(uploaded_zip_bytes)) as z:
+            xml_inner_path = st.session_state.get(k_xml)
+            if not xml_inner_path:
+                _, xmls, *_ = read_zip_listing(uploaded_zip_bytes)
+                xml_inner_path = xmls[0] if xmls else None
+            if not xml_inner_path:
+                st.session_state[f"{prefix}_panels"] = {"error": "No XML in ZIP."}
+                return
+            xml_bytes = z.read(xml_inner_path)
 
         # Fatores (reaproveita os do Single)
         factors = {
@@ -3049,7 +2881,7 @@ def ui_compare_option_b():
         # >>> Fallback: se a fonte selecionada for XML e o mapa tiver só White/FOF,
         # usa o primeiro XML do ZIP que contenha canais de cor (e aplica multiplicadores se for o modo “XML + mode …”)
         if str(st.session_state.get(k_cons, "XML (exact)")).startswith("XML") and not has_color_channels(mlmap_use):
-            fb = pick_first_with_colors(uploaded_zip_bytes, cache_ns=prefix)
+            fb = pick_first_with_colors(uploaded_zip_bytes)
             if fb:
                 if str(st.session_state.get(k_cons)).startswith("XML + mode"):
                     group_key = MODE_GROUP.get(st.session_state.get(k_mode), "").lower()
@@ -3242,7 +3074,7 @@ def ui_compare_option_b():
                         fx=FX,
                         title=f"Break-even — {lab}",
                     )
-                    st.plotly_chart(fig_be, use_container_width=True, key=f"{pref}_be_chart", config=plotly_cfg())
+                    st.plotly_chart(fig_be, use_container_width=True, key=f"{pref}_be_chart")
                     try:
                         render_break_even_insights(price_u, var_u, fixed_month, unit_lbl, SYM, FX, label=lab)
                     except Exception:
@@ -3386,7 +3218,7 @@ def render_axb_per_channel_chart(height=None):
         key="cmp_sort_choice",
         help="Choose how to order the channels in the A×B chart.",
     )
-    ctrl2.checkbox("Show insights", key="cmp_show_insights")
+    ctrl2.checkbox("Show insights", value=st.session_state.get("cmp_show_insights", True), key="cmp_show_insights")
 
     # ordem base e reordenação opcional
     ordered = ["Cyan","Magenta","Yellow","Black","Red","Green","FOF","White"]
@@ -3425,7 +3257,7 @@ def render_axb_per_channel_chart(height=None):
         xaxis_title="Channel",
         legend_title=None,
     )
-    st.plotly_chart(fig, use_container_width=True, key="cmp_ab_ml_chart", config=plotly_cfg())
+    st.plotly_chart(fig, use_container_width=True, key="cmp_ab_ml_chart")
 
     if st.session_state.get("cmp_show_insights", True):
         tips = insights_for_compare_maps(mlA_map, mlB_map)
@@ -3747,10 +3579,11 @@ def ui_single():
             help="Used to extract per-channel consumption and pixels.",
             key=prefix_key,
         )
-        try:
-            mlm2 = ml_per_m2_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend, cache_ns="single"))
-        except Exception:
-            mlm2 = {}
+        with zipfile.ZipFile(io.BytesIO(z)) as zf:
+            try:
+                mlm2 = ml_per_m2_from_xml_bytes(zf.read(xml_for_legend))
+            except Exception:
+                mlm2 = {}
         return xml_for_legend, mlm2
 
     # ---------- Preview block (image + captions) ----------
@@ -3761,26 +3594,33 @@ def ui_single():
     with leftC:
         path, _ = choose_path(st.session_state.get("single_chan_sel", "Preview"), jpgs, chan_map)
         if path:
-            fill_flag = bool(st.session_state.get("single_fill_preview_jpg", True)) if st.session_state.get("single_chan_sel") == "Preview" else bool(st.session_state.get("single_fill_preview", True))
-            trim_flag = bool(st.session_state.get("single_trim_channels", True)) if st.session_state.get("single_chan_sel") != "Preview" else False
-            preview_fragment(
-                "single_preview",
-                z,
-                path,
-                width=prev_w,
-                height=prev_h,
-                fill_flag=fill_flag,
-                trim_flag=trim_flag,
-                max_side=int(prev_w * 1.35),
-                caption=path,
-            )
-            sel = st.session_state.get("single_chan_sel")
-            if sel != "Preview" and mlm2:
-                v = mlm2.get(sel)
-                if v is not None:
-                    st.caption(f"**{sel}**: {v:.2f} ml/m²")
-            if mlm2:
-                st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
+            try:
+                img = load_preview_light(z, path, max_side=int(prev_w * 1.35))
+                if st.session_state.get("single_chan_sel") == "Preview":
+                    if bool(st.session_state.get("single_fill_preview_jpg", True)):
+                        img = coverbox(img, prev_w, prev_h)
+                        render_img_box_html(img, prev_w, prev_h, alt=path)
+                    else:
+                        img = letterbox(img, prev_w, prev_h)
+                        st.image(img, caption=path, use_container_width=False, width=prev_w)
+                else:
+                    if bool(st.session_state.get("single_trim_channels", True)):
+                        img = trim_margins(img)
+                    if bool(st.session_state.get("single_fill_preview", True)):
+                        img = coverbox(img, prev_w, prev_h)
+                        render_img_box_html(img, prev_w, prev_h, alt=path)
+                    else:
+                        img = letterbox(img, prev_w, prev_h)
+                        st.image(img, caption=path, use_container_width=False, width=prev_w)
+                sel = st.session_state.get("single_chan_sel")
+                if sel != "Preview" and mlm2:
+                    v = mlm2.get(sel)
+                    if v is not None:
+                        st.caption(f"**{sel}**: {v:.2f} ml/m²")
+                if mlm2:
+                    st.markdown(f"Total consumption: **{total_ml_per_m2_from_map(mlm2):.2f} ml/m²**")
+            except Exception as e:
+                st.error(f"Preview failed: {e}")
         else:
             st.info(f"This job does not contain '{st.session_state.get('single_chan_sel')}'.")
     with rightC:
@@ -3793,8 +3633,8 @@ def ui_single():
     if "single_show_px" not in st.session_state:
         st.session_state["single_show_px"] = True
     sct1, sct2 = st.columns(2)
-    sct1.checkbox("Show ml/m² chart", key="single_show_ml")
-    sct2.checkbox("Show pixels chart (K)", key="single_show_px")
+    sct1.checkbox("Show ml/m² chart", value=st.session_state.get("single_show_ml", True), key="single_show_ml")
+    sct2.checkbox("Show pixels chart (K)", value=st.session_state.get("single_show_px", True), key="single_show_px")
     # Per-channel consumption (ml/m²) — auto render (no Update button)
     if st.session_state.get("single_show_ml", True):
         render_title_with_hint(
@@ -3809,7 +3649,7 @@ def ui_single():
             fig_ch = go.Figure()
             fig_ch.add_trace(go.Bar(x=labels, y=values, marker=dict(color=colors), text=[f"{v:.2f}" for v in values], textposition="outside", cliponaxis=False))
             fig_ch.update_layout(template="plotly_white", height=prev_h, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="ml/m²", xaxis_title="Channel")
-            st.plotly_chart(fig_ch, use_container_width=True, key="single_ml_chart", config=plotly_cfg())
+            st.plotly_chart(fig_ch, use_container_width=True, key="single_ml_chart")
         else:
             st.info("Select an XML to display the chart.")
 
@@ -3819,10 +3659,11 @@ def ui_single():
             "Fire pixels per channel (K)",
             "K pixels fired per channel, from NumberOfFirePixelsPerSeparation in the XML."
         )
-        try:
-            pxm2 = fire_pixels_map_from_xml_bytes(read_bytes_from_zip(z, xml_for_legend, cache_ns="single"))
-        except Exception:
-            pxm2 = {}
+        with zipfile.ZipFile(io.BytesIO(z)) as zf:
+            try:
+                pxm2 = fire_pixels_map_from_xml_bytes(zf.read(xml_for_legend))
+            except Exception:
+                pxm2 = {}
         if pxm2:
             items_px = sorted(pxm2.items(), key=lambda kv: kv[1], reverse=True)
             labels_px = [k for k, _ in items_px]
@@ -3831,7 +3672,7 @@ def ui_single():
             fig_px = go.Figure()
             fig_px.add_trace(go.Bar(x=labels_px, y=values_px, marker=dict(color=colors_px), text=[f"{v:.1f}" for v in values_px], textposition="outside", cliponaxis=False))
             fig_px.update_layout(template="plotly_white", height=prev_h, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="K pixels", xaxis_title="Channel")
-            st.plotly_chart(fig_px, use_container_width=True, key="single_px_chart", config=plotly_cfg())
+            st.plotly_chart(fig_px, use_container_width=True, key="single_px_chart")
         else:
             st.info("This XML does not contain 'NumberOfFirePixelsPerSeparation'.")
 
@@ -3842,8 +3683,12 @@ def ui_single():
     # Get XML original dimensions
     w0 = h0 = 0.0
     try:
-        xml_bytes_sz = read_bytes_from_zip(z, xml_for_legend, cache_ns="single")
-        w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
+        with zipfile.ZipFile(io.BytesIO(z)) as zf:
+            try:
+                xml_bytes_sz = zf.read(xml_for_legend)
+                w0, h0, _ = get_xml_dims_m(xml_bytes_sz)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -3952,8 +3797,8 @@ def ui_single():
         index={"Small":0,"Medium":1,"Large":2}.get(st.session_state.get("cmp_pdf_size","Medium"),1),
         key="cmp_pdf_size",
         help="Defines thumbnail size and chart/table layout.")
-    show_comp = sp2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
-    show_totals = sp3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
+    show_comp = sp2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
+    show_totals = sp3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
 
     try:
         # Use current mlm2 directly to avoid dependency on chart state
@@ -3963,154 +3808,151 @@ def ui_single():
             values_single = [v for _, v in items_single]
         else:
             labels_single, values_single = [], []
-        with st.spinner("Building PDF…"):
-            pdf_single = build_single_pdf_matplotlib(
-                labels_single, values_single, mlm2,
-                label=st.session_state.get("single_zip_name", "Job"),
-                z_bytes=z,
-                selected_channel=st.session_state.get("single_chan_sel", "Preview"),
-                show_comp=show_comp,
-                preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
-                show_totals=show_totals,
-            )
+        pdf_single = build_single_pdf_matplotlib(
+            labels_single, values_single, mlm2,
+            label=st.session_state.get("single_zip_name", "Job"),
+            z_bytes=z,
+            selected_channel=st.session_state.get("single_chan_sel", "Preview"),
+            show_comp=show_comp,
+            preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
+            show_totals=show_totals,
+        )
         st.download_button("Job PDF", data=pdf_single, file_name="single_job.pdf", mime="application/pdf")
     except Exception as e:
         st.info(f"PDF not available: {e}")
 
     # ---------- Job — Inputs (Apply), placed right below charts ----------
     def job_inputs_single(prefix: str, label: str):
-        files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z, cache_ns="single")
-        submitted = False
-        with st.form(key=f"{prefix}_form"):
-            xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
-            xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
-            xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
-            w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
-    
-            auto_mode = infer_mode_from_xml(xml_bytes_hdr)
-            white_in = has_white_in_xml(xml_bytes_hdr)
-            PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
-            mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-            idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
-    
-            # Source first to decide locking
-            cons_src = st.radio(
-                "Consumption source (ml/m²)",
-                ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
-                index=0,
-                key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
+        files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z)
+        xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
+        xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
+        with zipfile.ZipFile(io.BytesIO(z)) as zf:
+            xml_bytes_hdr = zf.read(st.session_state.get(f"{prefix}_xml_sel", xml_sel))
+        w_xml_def, h_xml_def, area_xml_m2_def = get_xml_dims_m(xml_bytes_hdr)
+
+        auto_mode = infer_mode_from_xml(xml_bytes_hdr)
+        white_in = has_white_in_xml(xml_bytes_hdr)
+        PRINT_MODE_OPTIONS = list(PRINT_MODES.keys())
+        mode_default = auto_mode if auto_mode in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+        idx_mode = PRINT_MODE_OPTIONS.index(mode_default) if (mode_default in PRINT_MODE_OPTIONS) else 0
+
+        # Source first to decide locking
+        cons_src = st.radio(
+            "Consumption source (ml/m²)",
+            ["XML (exact)", "XML + mode multiplier (%)", "Manual"],
+            index=0,
+            key=f"{prefix}_cons_source", help="Choose the source of ml/m²: exact XML, XML scaled by print mode multipliers, or manual values.",
+        )
+        lock_mode = str(cons_src).startswith("XML (exact)")
+        # Ensure valid selection to avoid "Choose an option" disabled selectbox
+        if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
+            st.session_state[f"{prefix}_mode_sel"] = mode_default
+
+        mode_sel = st.selectbox(
+            "Print mode",
+            PRINT_MODE_OPTIONS,
+            index=idx_mode,
+            key=f"{prefix}_mode_sel",
+            format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
+            disabled=lock_mode,
+            help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
+        )
+        mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
+        mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
+        if mode_for_caption in PRINT_MODES:
+            st.caption(f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**")
+        res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
+        if res_key in PRINT_MODES:
+            st.caption(f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**")
+
+        a1, a2, a3 = st.columns(3)
+        a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m", help="Printable width used for this job.")
+        a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m", help="Length to be produced for this job.")
+        a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste", help="Allowance for setup, trims and reprints.")
+        # Details for source
+        if cons_src.startswith("XML + mode multiplier"):
+            st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
+            # Inline per-mode scalers (Single) — use unique keys and sync to shared
+            render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
+        elif cons_src == "Manual":
+            mcols = st.columns(3)
+            mcols[0].number_input(
+                f"Manual — Color (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_c"
             )
-            lock_mode = str(cons_src).startswith("XML (exact)")
-            # Ensure valid selection to avoid "Choose an option" disabled selectbox
-            if (st.session_state.get(f"{prefix}_mode_sel") not in PRINT_MODE_OPTIONS) or lock_mode:
-                st.session_state[f"{prefix}_mode_sel"] = mode_default
-    
-            mode_sel = st.selectbox(
-                "Print mode",
-                PRINT_MODE_OPTIONS,
-                index=idx_mode,
-                key=f"{prefix}_mode_sel",
-                format_func=lambda m: mode_option_label(m, white_in, get_unit(), w_xml_def),
-                disabled=lock_mode,
-                help=("Locked to the XML-inferred mode when using XML (exact)." if lock_mode else None),
+            mcols[1].number_input(
+                f"Manual — White (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_w"
             )
-            mode_eff = mode_sel if mode_sel in PRINT_MODES else (mode_default if mode_default in PRINT_MODES else None)
-            mode_for_caption = mode_eff if mode_eff in PRINT_MODES else (PRINT_MODE_OPTIONS[0] if PRINT_MODE_OPTIONS else None)
-            if mode_for_caption in PRINT_MODES:
-                st.caption(f"XML area: **{area_xml_m2_def:.3f} m²** • Speed: **{speed_label(get_unit(), PRINT_MODES[mode_for_caption]['speed'], w_xml_def)}**")
-            res_key = auto_mode if auto_mode in PRINT_MODES else mode_for_caption
-            if res_key in PRINT_MODES:
-                st.caption(f"XML resolution: **{PRINT_MODES[res_key]['res_color']} (color){' • ' + WHITE_RES + ' (white)' if white_in else ''}**")
-    
-            a1, a2, a3 = st.columns(3)
-            a1.number_input("Usable width (m)", value=float(round(w_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_width_m", help="Printable width used for this job.")
-            a2.number_input("Length (m)",        value=float(round(h_xml_def, 3)), min_value=0.0, step=0.01, format="%.3f", key=f"{prefix}_length_m", help="Length to be produced for this job.")
-            a3.number_input("Waste (%)",         value=2.0,                        min_value=0.0, step=0.5,                key=f"{prefix}_waste", help="Allowance for setup, trims and reprints.")
-            # Details for source
-            if cons_src.startswith("XML + mode multiplier"):
-                st.info("Using XML + mode multipliers. The selected print mode applies Color/White/FOF factors.")
-                # Inline per-mode scalers (Single) — use unique keys and sync to shared
-                render_mode_multiplier_controls(use_expander=False, show_presets=True, key_prefix=prefix, sync_to_shared=True)
-            elif cons_src == "Manual":
-                mcols = st.columns(3)
-                mcols[0].number_input(
-                    f"Manual — Color (ml{per_unit('m2')})",
-                    value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_c"
-                )
-                mcols[1].number_input(
-                    f"Manual — White (ml{per_unit('m2')})",
-                    value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_w"
-                )
-                mcols[2].number_input(
-                    f"Manual — FOF (ml{per_unit('m2')})",
-                    value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_f"
-                )
-    
-    
-            lab1, _ = st.columns([1,1])
-            lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h", help="Hourly variable labor. Do not use if already included in monthly fixed costs.")
-    
-            st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
-            _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
-            df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
-            st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
-    
-            fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
-    
-            if fix_mode.startswith("Direct"):
-                with st_div("ink-fixed-grid"):
-                    mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-                    mv1.number_input(
-                        f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
-                        min_value=0.0,
-                        value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
-                        step=0.05,
-                        key=f"{prefix}_fixed_unit",
-                        help="Fixed cost per unit if not using the monthly helper.")
-                    mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price", help="Selling price per unit.")
-                    mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin", help="Target markup over cost before taxes and fees.")
-                    mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax", help="Taxes or withholdings applied to price.")
-                    mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms", help="Payment terms, card fees, financing, etc.")
-                    st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-            else:
-                st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
-                fx1, fx2, fx3, fx4 = st.columns(4)
-                fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
-                fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
-                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
-                fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
-    
-                st.caption("Other fixed (monthly)")
-                _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
-                df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
-                st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
-    
-                prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
-    
-                sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
-                total_fix_m = (
-                    float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
-                    + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
-                    + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
-                    + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
-                    + float(sum_others)
-                )
-                alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
-                st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
-                st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
-    
-                pv2, pv3, pv4, pv5 = st.columns(4)
-                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
-                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
-                pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
-                pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
+            mcols[2].number_input(
+                f"Manual — FOF (ml{per_unit('m2')})",
+                value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
+                min_value=0.0, step=0.1, key=f"{prefix}_man_f"
+            )
+
+
+        lab1, _ = st.columns([1,1])
+        lab1.number_input("Variable labor ($/h) — use only if NOT in Fixed", min_value=0.0, value=float(st.session_state.get(f"{prefix}_lab_h", 0.0)), step=0.5, key=f"{prefix}_lab_h", help="Hourly variable labor. Do not use if already included in monthly fixed costs.")
+
+        st.caption(f"Other variables ({per_unit(get_unit())}) — optional")
+        _vars_input = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name": "—", "Value": 0.0}]), ["Name","Value"])
+        df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
+        st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
+
+        fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
+
+        if fix_mode.startswith("Direct"):
+            with st_div("ink-fixed-grid"):
+                mv1, mv2, mv3, mv4, mv5 = st.columns(5)
+                mv1.number_input(
+                    f"Fixed allocation\u00A0(/"+unit_label_short(get_unit())+")",
+                    min_value=0.0,
+                    value=float(st.session_state.get(f"{prefix}_fixed_unit", 0.0)),
+                    step=0.05,
+                    key=f"{prefix}_fixed_unit",
+                    help="Fixed cost per unit if not using the monthly helper.")
+                mv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price", help="Selling price per unit.")
+                mv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin", help="Target markup over cost before taxes and fees.")
+                mv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)),    step=0.5, key=f"{prefix}_tax", help="Taxes or withholdings applied to price.")
+                mv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)),  step=0.05, key=f"{prefix}_terms", help="Payment terms, card fees, financing, etc.")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-    
-            submitted = st.form_submit_button(f"Apply {label}")
-        if submitted:
+        else:
+            st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
+            fx1, fx2, fx3, fx4 = st.columns(4)
+            fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
+            fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
+            fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
+            fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
+
+            st.caption("Other fixed (monthly)")
+            _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+            df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
+            st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
+
+            prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
+
+            sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
+            total_fix_m = (
+                float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0))
+                + float(st.session_state.get(f"{prefix}_fix_over_month", 0.0))
+                + float(sum_others)
+            )
+            alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
+            st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
+            st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
+
+            pv2, pv3, pv4, pv5 = st.columns(4)
+            pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
+            pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
+            pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
+            pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
+            st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
+
+        if st.button(f"Apply {label}", key=f"{prefix}_apply"):
             if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
                 sync_mode_scalers_from_prefix(prefix)
             st.success(f"{label} saved. Now click 'Calculate'.")
@@ -4147,14 +3989,15 @@ def ui_single():
 
         other_vars_df = ensure_df(st.session_state.get(f"{prefix}_other_vars", [{"Name":"—","Value":0.0}]), ["Name","Value"])
 
-        xml_inner_path = st.session_state.get(f"{prefix}_xml_sel")
-        if not xml_inner_path:
-            _, xmls_i, *_ = read_zip_listing(z, cache_ns="single")
-            xml_inner_path = xmls_i[0] if xmls_i else None
-        if not xml_inner_path:
-            st.session_state["single_panels"] = {"error": "No XML in ZIP."}
-            return
-        xml_bytes = read_bytes_from_zip(z, xml_inner_path, cache_ns="single")
+        with zipfile.ZipFile(io.BytesIO(z)) as zf:
+            xml_inner_path = st.session_state.get(f"{prefix}_xml_sel")
+            if not xml_inner_path:
+                _, xmls_i, *_ = read_zip_listing(z)
+                xml_inner_path = xmls_i[0] if xmls_i else None
+            if not xml_inner_path:
+                st.session_state["single_panels"] = {"error": "No XML in ZIP."}
+                return
+            xml_bytes = zf.read(xml_inner_path)
 
         factors = get_mode_factors_from_state()
 
@@ -4253,11 +4096,7 @@ def ui_single():
 
     st.markdown("---")
     if st.button("Calcular", type="primary", key="single_btn_calc"):
-    try:
         run_single_job(SYM, FX)
-    except Exception as e:
-        st.error("Single calculation failed — see details below.")
-        st.exception(e)
         st.success("Job calculado.")
 
     # ---------- Render panels ----------
@@ -4337,7 +4176,7 @@ def ui_single():
                 fx=FX,
                 title="Break-even — Job"
             )
-            st.plotly_chart(fig_be, use_container_width=True, key="single_be_chart", config=plotly_cfg())
+            st.plotly_chart(fig_be, use_container_width=True, key="single_be_chart")
             try:
                 render_break_even_insights(price_u, var_u, fixed_month, unit_lbl, SYM, FX, label="Job")
             except Exception:
@@ -4382,10 +4221,8 @@ def ui_compare():
         return
 
     # Listagem de conteúdo
-    zipA_bytes = zipA.getvalue()
-    zipB_bytes = zipB.getvalue()
-    filesA, xmlsA, jpgsA, tifsA, adA = read_zip_listing(zipA_bytes, cache_ns="cmpA")
-    filesB, xmlsB, jpgsB, tifsB, adB = read_zip_listing(zipB_bytes, cache_ns="cmpB")
+    filesA, xmlsA, jpgsA, tifsA, adA = read_zip_listing(zipA.getvalue())
+    filesB, xmlsB, jpgsB, tifsB, adB = read_zip_listing(zipB.getvalue())
     mA1, mA2, mA3, mB1, mB2, mB3 = st.columns(6)
     mA1.metric("A — XML", len(xmlsA)); mA2.metric("A — JPG", len(jpgsA)); mA3.metric("A — TIFF", len(tifsA))
     mB1.metric("B — XML", len(xmlsB)); mB2.metric("B — JPG", len(jpgsB)); mB3.metric("B — TIFF", len(tifsB))
@@ -4403,22 +4240,24 @@ def ui_compare():
     with jbA:
         st.subheader("Job A")
         xmlA = st.selectbox("XML (A)", xmlsA, index=0, key="cmp_xml_A")
-        xmlA_bytes = read_bytes_from_zip(zipA_bytes, xmlA, cache_ns="cmpA")
+        with zipfile.ZipFile(io.BytesIO(zipA.getvalue())) as zA:
+            xmlA_bytes = zA.read(xmlA)
         mlm2A = ml_per_m2_from_xml_bytes(xmlA_bytes) or {}
         wA_xml, hA_xml, areaA_xml_m2 = get_xml_dims_m(xmlA_bytes)
 
     with jbB:
         st.subheader("Job B")
         xmlB = st.selectbox("XML (B)", xmlsB, index=0, key="cmp_xml_B")
-        xmlB_bytes = read_bytes_from_zip(zipB_bytes, xmlB, cache_ns="cmpB")
+        with zipfile.ZipFile(io.BytesIO(zipB.getvalue())) as zB:
+            xmlB_bytes = zB.read(xmlB)
         mlm2B = ml_per_m2_from_xml_bytes(xmlB_bytes) or {}
         wB_xml, hB_xml, areaB_xml_m2 = get_xml_dims_m(xmlB_bytes)
 
     # --- FALLBACK (A × B): se o XML escolhido só tem White/FOF, somar todos os XMLs do ZIP
     if not has_color_channels(mlm2A):
-        mlm2A = ml_map_union_all_xmls(zipA_bytes, cache_ns="cmpA")
+        mlm2A = ml_map_union_all_xmls(zipA.getvalue())
     if not has_color_channels(mlm2B):
-        mlm2B = ml_map_union_all_xmls(zipB_bytes, cache_ns="cmpB")
+        mlm2B = ml_map_union_all_xmls(zipB.getvalue())
 
     # Pixels (por Selected XML)
     pxA = fire_pixels_map_from_xml_bytes(xmlA_bytes)
@@ -4426,9 +4265,9 @@ def ui_compare():
 
     # --- FALLBACK para pixels: se só houver White/FOF, somar os pixels de todos os XMLs do ZIP
     if not has_color_channels(pxA):
-        pxA = fire_pixels_union_all_xmls(zipA_bytes, cache_ns="cmpA")
+        pxA = fire_pixels_union_all_xmls(zipA.getvalue())
     if not has_color_channels(pxB):
-        pxB = fire_pixels_union_all_xmls(zipB_bytes, cache_ns="cmpB")
+        pxB = fire_pixels_union_all_xmls(zipB.getvalue())
 
     # ---------- Mapas de TIFF por canal (para preview)
     chan_mapA, chan_mapB = {}, {}
@@ -4517,20 +4356,18 @@ def ui_compare():
     st.markdown(" ")
     colL, colR = st.columns(2)
 
-    def render_side(label, zip_bytes, jpgs, chan_map, ml_map, px_map, ch, preview_w=560, preview_h=460, cache_ns="cmpA"):
+    def render_side(label, zip_file, jpgs, chan_map, ml_map, px_map, ch, preview_w=560, preview_h=460):
         st.markdown(f"**Selected ({label})**: {ch}")
         path, _ = choose_path(ch, jpgs, chan_map)
-        preview_fragment(
-            f"{cache_ns}_{label}",
-            zip_bytes,
-            path,
-            width=preview_w,
-            height=preview_h,
-            fill_flag=False,
-            trim_flag=False,
-            max_side=int(preview_w * 1.35),
-            caption=path or f"{label} preview",
-        )
+        if path:
+            try:
+                img = load_preview_light(zip_file.getvalue(), path, max_side=int(preview_w*1.35))
+                img = letterbox(img, preview_w, preview_h)
+                st.image(img, caption=path, use_container_width=False, width=preview_w)
+            except Exception as e:
+                st.info(f"{label}: preview unavailable ({e})")
+        else:
+            st.info(f"{label}: this job does not contain '{ch}' for preview.")
         # ml/m² for the current channel (if present in XML)
         v = ml_map.get(ch)
         if v is not None:
@@ -4546,7 +4383,7 @@ def ui_compare():
             fig.add_trace(go.Bar(x=labels, y=values, marker=dict(color=colors)))
             fig.update_layout(template="plotly_white", height=340, margin=dict(l=10, r=10, t=30, b=10),
                               yaxis_title="ml/m²", xaxis_title="Channel", title=f"Per-channel consumption (ml/m²) — {label}")
-            st.plotly_chart(fig, use_container_width=True, key=f"cmp_side_ml_{label}", config=plotly_cfg())
+            st.plotly_chart(fig, use_container_width=True, key=f"cmp_side_ml_{label}")
 
             # --- Pixels per channel (K) — same format/colors
             if px_map:
@@ -4561,21 +4398,19 @@ def ui_compare():
                                 margin=dict(l=10, r=10, t=30, b=10),
                                 yaxis_title="K pixels", xaxis_title="Channel",
                                 title=f"Fire pixels per channel (K) — {label}")
-                st.plotly_chart(figp, use_container_width=True, key=f"cmp_side_px_{label}", config=plotly_cfg())
+                st.plotly_chart(figp, use_container_width=True, key=f"cmp_side_px_{label}")
 
     with colL:
             render_side(
-                "Job A", zipA_bytes, jpgsA, chan_mapA, mlm2A, pxA, sel_ch,
+                "Job A", zipA, jpgsA, chan_mapA, mlm2A, pxA, sel_ch,
                 preview_w=st.session_state.get("cmp_prev_w", 560),
                 preview_h=st.session_state.get("cmp_prev_h", 460),
-                cache_ns="cmpA",
             )
     with colR:
         render_side(
-            "Job B", zipB_bytes, jpgsB, chan_mapB, mlm2B, pxB, sel_ch,
+            "Job B", zipB, jpgsB, chan_mapB, mlm2B, pxB, sel_ch,
             preview_w=st.session_state.get("cmp_prev_w", 560),
             preview_h=st.session_state.get("cmp_prev_h", 460),
-            cache_ns="cmpB",
         )
 
     # ---------- Simulação de custos & BEP (A×B)
@@ -4609,7 +4444,7 @@ def ui_compare():
                           margin=dict(l=10, r=10, t=50, b=10),
                             xaxis_title="Channel", yaxis_title="ml/m²", legend_title="")
     
-    st.plotly_chart(fig_cmp, use_container_width=True, key="cmp_pair_ml_chart", config=plotly_cfg())
+    st.plotly_chart(fig_cmp, use_container_width=True, key="cmp_pair_ml_chart")
     # — Quick insights A×B
     tips = insights_for_compare(channels_ordered, yA, yB)
     if tips:
@@ -4632,20 +4467,19 @@ def ui_compare():
         key="cmp_pdf_size",
         help="Defines thumbnail size and chart/table layout."
     )
-    show_comp = spdf2.checkbox("Show 100% composition", key="cmp_pdf_show_comp")
-    show_totals = spdf3.checkbox("Totals below previews", key="cmp_pdf_show_totals")
+    show_comp = spdf2.checkbox("Show 100% composition", value=st.session_state.get("cmp_pdf_show_comp", True), key="cmp_pdf_show_comp")
+    show_totals = spdf3.checkbox("Totals below previews", value=st.session_state.get("cmp_pdf_show_totals", True), key="cmp_pdf_show_totals")
 
-    with st.spinner("Building A×B PDF…"):
-        pdf_bytes = build_comparison_pdf_matplotlib(
-            channels_ordered, yA, yB, mlm2A, mlm2B,
-            labelA=nameA,
-            labelB=nameB,
-            zA_bytes=zA, zB_bytes=zB,
-            selected_channel=st.session_state.get("cmp_chan_sel", "Preview"),
-            show_comp=show_comp,
-            preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
-            show_totals=show_totals,
-        )
+    pdf_bytes = build_comparison_pdf_matplotlib(
+        channels_ordered, yA, yB, mlm2A, mlm2B,
+        labelA=nameA,
+        labelB=nameB,
+        zA_bytes=zA, zB_bytes=zB,
+        selected_channel=st.session_state.get("cmp_chan_sel", "Preview"),
+        show_comp=show_comp,
+        preview_size={"Small":"S","Medium":"M","Large":"L"}[size_opt],
+        show_totals=show_totals,
+    )
     st.download_button("Export A×B PDF", data=pdf_bytes,
                     file_name="compare_AxB.pdf", mime="application/pdf")
     # === Inputs A and B just below the A×B PDF button ===
@@ -4687,7 +4521,7 @@ def ui_compare():
                             margin=dict(l=10, r=10, t=50, b=10),
                             xaxis_title="Channel", yaxis_title="K pixels", legend_title="",
                 title="A × B comparison — Fire pixels per channel (K)")
-    st.plotly_chart(fig_pixcmp, use_container_width=True, key="cmp_pair_px_chart", config=plotly_cfg())
+    st.plotly_chart(fig_pixcmp, use_container_width=True, key="cmp_pair_px_chart")
     
     # --------------------
     # Simulação de custos — A×B (mesma lógica do Single)
@@ -5052,7 +4886,7 @@ def ui_compare():
                         fx=FX,
                         title=f"Break-even — {label}",
                     )
-                    st.plotly_chart(fig_be, use_container_width=True, key=f"{key_prefix}_be_chart", config=plotly_cfg())
+                    st.plotly_chart(fig_be, use_container_width=True, key=f"{key_prefix}_be_chart")
 
             return result_payload
 
@@ -5099,30 +4933,27 @@ def ui_batch():
     per_file_totals_pxK = []
     factors = get_mode_factors_from_state()
 
-    total_files = len(ups)
-    progress = st.progress(0, text="Processing files…")
-    for i, up in enumerate(ups, start=1):
-        with st.spinner(f"Processing {getattr(up, 'name', 'job.zip')} ({i}/{total_files})"):
-            try:
-                zbytes = up.getvalue()
-            except Exception:
-                zbytes = up.read() if hasattr(up, 'read') else None
-            name = getattr(up, 'name', 'job.zip')
-        cache_ns = f"batch_{name}"
-        files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=cache_ns)
+    for up in ups:
+        try:
+            zbytes = up.getvalue()
+        except Exception:
+            zbytes = up.read() if hasattr(up, 'read') else None
+        name = getattr(up, 'name', 'job.zip')
+        files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes)
         if not xmls:
             rows.append({"File": name, "Status": "No XML in ZIP"})
             continue
         # Pick XML: prefer first with colors
         picked_ml = None; picked_xml = xmls[0]
-        for xp in xmls:
-            raw = read_bytes_from_zip(zbytes, xp, cache_ns=cache_ns)
-            mm = ml_per_m2_from_xml_bytes(raw)
-            if has_color_channels(mm):
-                picked_ml = mm; picked_xml = xp; break
-        if picked_ml is None:
-            picked_ml = ml_per_m2_from_xml_bytes(read_bytes_from_zip(zbytes, picked_xml, cache_ns=cache_ns))
-        xml_bytes = read_bytes_from_zip(zbytes, picked_xml, cache_ns=cache_ns)
+        with zipfile.ZipFile(io.BytesIO(zbytes)) as zf:
+            for xp in xmls:
+                raw = zf.read(xp)
+                mm = ml_per_m2_from_xml_bytes(raw)
+                if has_color_channels(mm):
+                    picked_ml = mm; picked_xml = xp; break
+            if picked_ml is None:
+                picked_ml = ml_per_m2_from_xml_bytes(zf.read(picked_xml))
+            xml_bytes = zf.read(picked_xml)
 
         # Apply source/multipliers
         mode_auto = infer_mode_from_xml(xml_bytes)
@@ -5183,11 +5014,6 @@ def ui_batch():
         per_file_names.append(name)
         per_file_totals_ml.append(float(total))
         per_file_totals_pxK.append(float(px_total_k))
-        # Update progress
-        try:
-            progress.progress(i/total_files)
-        except Exception:
-            pass
 
     # Show table
     st.markdown("**Summary (per file)**")
@@ -5274,7 +5100,7 @@ def ui_batch():
                 cliponaxis=False if txt else None,
             ))
             fig.update_layout(template='plotly_white', height=420, margin=dict(l=10,r=10,t=40,b=10), yaxis_title='ml/m²', xaxis_title='Channel')
-            st.plotly_chart(fig, use_container_width=True, key="batch_agg_ml_chart", config=plotly_cfg())
+            st.plotly_chart(fig, use_container_width=True, key="batch_agg_ml_chart")
 
         if show_px and agg_pix:
             itemsP = [(c, float(agg_pix.get(c, 0.0))) for c in channels_ordered]
@@ -5303,7 +5129,7 @@ def ui_batch():
                 cliponaxis=False if txtP else None,
             ))
             figP.update_layout(template='plotly_white', height=420, margin=dict(l=10,r=10,t=40,b=10), yaxis_title='K pixels', xaxis_title='Channel')
-            st.plotly_chart(figP, use_container_width=True, key="batch_agg_px_chart", config=plotly_cfg())
+            st.plotly_chart(figP, use_container_width=True, key="batch_agg_px_chart")
 
         # Aggregated CSV (per channel)
         try:
@@ -5376,7 +5202,7 @@ def ui_batch():
             xaxis_title='Channel',
             legend_title='File',
         )
-        st.plotly_chart(fig_g, use_container_width=True, key="batch_group_bars_chart", config=plotly_cfg())
+        st.plotly_chart(fig_g, use_container_width=True, key="batch_group_bars_chart")
 
         # Optional heatmap for a compact overview
         if show_heat:
@@ -5388,7 +5214,7 @@ def ui_batch():
                 colorbar=dict(title=('%' if norm_share else 'ml/m²'))
             ))
             fig_h.update_layout(template='plotly_white', height=460, margin=dict(l=10,r=10,t=30,b=10), xaxis_title='Channel', yaxis_title='File')
-            st.plotly_chart(fig_h, use_container_width=True, key="batch_group_heatmap_chart", config=plotly_cfg())
+            st.plotly_chart(fig_h, use_container_width=True, key="batch_group_heatmap_chart")
 
         # CSV — per-file per-channel (wide)
         try:
@@ -5406,31 +5232,25 @@ def ui_batch():
     # PDFs (ZIP)
     if per_file_maps:
         try:
-            with st.spinner("Building PDFs (ZIP)…"):
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zpf:
-                    for name, zbytes, mlm in per_file_maps:
-                        items = sorted((mlm or {}).items(), key=lambda kv: kv[1], reverse=True)
-                        chs = [k for k,_ in items]
-                        ys  = [float(v) for _,v in items]
-                        pdf = build_single_pdf_matplotlib(
-                            chs, ys, mlm,
-                            label=name, z_bytes=zbytes,
-                            selected_channel='Preview',
-                            show_comp=True,
-                            preview_size={"Small":"S","Medium":"M","Large":"L"}.get(st.session_state.get("cmp_pdf_size","Medium"),"M"),
-                            show_totals=True,
-                        )
-                        safe_name = _slug(name) or 'job'
-                        zpf.writestr(f"{safe_name}.pdf", pdf)
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zpf:
+                for name, zbytes, mlm in per_file_maps:
+                    items = sorted((mlm or {}).items(), key=lambda kv: kv[1], reverse=True)
+                    chs = [k for k,_ in items]
+                    ys  = [float(v) for _,v in items]
+                    pdf = build_single_pdf_matplotlib(
+                        chs, ys, mlm,
+                        label=name, z_bytes=zbytes,
+                        selected_channel='Preview',
+                        show_comp=True,
+                        preview_size={"Small":"S","Medium":"M","Large":"L"}.get(st.session_state.get("cmp_pdf_size","Medium"),"M"),
+                        show_totals=True,
+                    )
+                    safe_name = _slug(name) or 'job'
+                    zpf.writestr(f"{safe_name}.pdf", pdf)
             st.download_button("Download PDFs (ZIP)", data=zip_buf.getvalue(), file_name="batch_pdfs.zip", mime="application/zip")
         except Exception as e:
             st.info(f"PDF ZIP not available: {e}")
-
-    try:
-        progress.empty()
-    except Exception:
-        pass
 
     # Per-file bars (totals)
     if per_file_names:
@@ -5439,8 +5259,8 @@ def ui_batch():
         if "batch_show_perfile_px" not in st.session_state:
             st.session_state["batch_show_perfile_px"] = True
         pf1, pf2 = st.columns(2)
-        pf1.checkbox("Show per-file ml/m² totals", key="batch_show_perfile_ml")
-        pf2.checkbox("Show per-file pixels totals (K)", key="batch_show_perfile_px")
+        pf1.checkbox("Show per-file ml/m² totals", value=st.session_state.get("batch_show_perfile_ml", True), key="batch_show_perfile_ml")
+        pf2.checkbox("Show per-file pixels totals (K)", value=st.session_state.get("batch_show_perfile_px", True), key="batch_show_perfile_px")
         st.markdown("---")
         st.markdown("**Per file — totals**")
         # ml/m² per file
@@ -5460,7 +5280,7 @@ def ui_batch():
                     cliponaxis=False,
                 ))
                 figF.update_layout(template='plotly_white', height=440, margin=dict(l=10,r=10,t=40,b=110), yaxis_title='ml/m²', xaxis_title='File', xaxis_tickangle=-30)
-                st.plotly_chart(figF, use_container_width=True, key="batch_perfile_ml_chart", config=plotly_cfg())
+                st.plotly_chart(figF, use_container_width=True, key="batch_perfile_ml_chart")
         except Exception as e:
             st.info(f"Per-file ml/m² chart not available: {e}")
 
@@ -5481,7 +5301,7 @@ def ui_batch():
                     cliponaxis=False,
                 ))
                 figFP.update_layout(template='plotly_white', height=440, margin=dict(l=10,r=10,t=40,b=110), yaxis_title='K pixels', xaxis_title='File', xaxis_tickangle=-30)
-                st.plotly_chart(figFP, use_container_width=True, key="batch_perfile_px_chart", config=plotly_cfg())
+                st.plotly_chart(figFP, use_container_width=True, key="batch_perfile_px_chart")
         except Exception as e:
             st.info(f"Per-file pixels chart not available: {e}")
 
@@ -5490,8 +5310,6 @@ def ui_batch():
 # (moved to end so all UIs are defined before being called)
 # =========================
 try:
-    # Sidebar tools (reset & clear cache)
-    render_tools_sidebar()
     sel = (flow or st.session_state.get("workflow_selector") or "")
 except Exception:
     sel = ""
