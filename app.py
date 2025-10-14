@@ -1000,8 +1000,8 @@ def ui_sales_quick_quote():
                 st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
             cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
 
-        s2a, s2b = st.columns(2)
-        width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=default_width_value(1.45), step=0.01, key="sales_width_m")
+            s2a, s2b = st.columns(2)
+            width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=default_width_value(1.45), step=0.01, key="sales_width_m")
             c = s2b.number_input(f"Color ({cons_unit})", min_value=0.0, value=6.0, step=0.1, key="sales_c")
 
             s3a, s3b = st.columns(2)
