@@ -1,3 +1,4 @@
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
@@ -16,7 +17,6 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 # EXEMPLOS:
 #   - Para salvar um PNG/CSV/etc: outfile = WORK_DIR / "saida.png"
 #   - Para ler um arquivo estático: logo = ASSETS / "logo.png"
-from __future__ import annotations
 import os, pathlib
 os.environ.setdefault("HOME", "/tmp")
 pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
