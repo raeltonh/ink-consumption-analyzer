@@ -1,22 +1,14 @@
 from __future__ import annotations
+import time
+import streamlit as st
+st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
+
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
 from pathlib import Path
 import tempfile
-
-# Raiz do projeto (apenas leitura)
-ROOT = Path(__file__).parent
-ASSETS = ROOT / "assets"      # use só para leitura de arquivos estáticos
-
-# Pasta de trabalho/gravação (permitida no Streamlit Cloud)
-WORK_DIR = Path(tempfile.gettempdir()) / "ink_analyzer"
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-# EXEMPLOS:
-#   - Para salvar um PNG/CSV/etc: outfile = WORK_DIR / "saida.png"
-#   - Para ler um arquivo estático: logo = ASSETS / "logo.png"
 import os, pathlib
 os.environ.setdefault("HOME", "/tmp")
 pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
@@ -4067,7 +4059,7 @@ def ui_single():
             df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
             st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
     
-            fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
+            fix_mode = str(st.session_state.get(f"{prefix}_fix_mode", "Direct per m²"))
     
             if fix_mode.startswith("Direct"):
                 with st_div("ink-fixed-grid"):
@@ -4118,7 +4110,7 @@ def ui_single():
                 pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
     
-            submitted = st.form_submit_button("Apply Job")
+            submitted = st.form_submit_button(f"Apply {label}")
         if submitted:
             if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
                 sync_mode_scalers_from_prefix(prefix)
@@ -4126,6 +4118,13 @@ def ui_single():
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
+        st.radio(
+            "Fixed costs mode",
+            ["Direct per m²", "Monthly allocation"],
+            horizontal=True,
+            key="single_fix_mode",
+            help="Choose how to handle fixed costs: per m² directly, or allocate via monthly fixed costs + monthly production.",
+        )
         job_inputs_single("single", "Job")
 
     # ---------- Shared costs & currency (Single) ----------
