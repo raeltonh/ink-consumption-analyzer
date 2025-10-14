@@ -2,7 +2,7 @@ from __future__ import annotations
 import time
 import streamlit as st
 from PIL import Image
-st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Ink Consumption — ml/m² & ROI Analyzer", page_icon="assets/app_logo.png", layout="wide")
 
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
@@ -101,9 +101,9 @@ def _load_asset_image(basename: str):
             continue
     return None
 
-_icon = _load_asset_image("page_icon") or "🖨️"
+_icon = _load_asset_image("app_logo") or _load_asset_image("page_icon") or "🖨️"
 # Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
-DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
+DEFAULT_APP_TITLE = "Ink Consumption — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
 # ---------- Fast/Safe boot block ----------
 SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
@@ -3646,7 +3646,7 @@ def insights_for_compare(all_channels: List[str], yA: List[float], yB: List[floa
 # ====== Cabeçalho simples
 def render_header():
     """Compact header with a small image to the left of the title."""
-    img = _load_asset_image("header_banner") or _load_asset_image("page_icon")
+    img = _load_asset_image("header_banner") or _load_asset_image("app_logo") or _load_asset_image("page_icon")
     # Allow overrides from session state
     app_title = st.session_state.get("app_title", DEFAULT_APP_TITLE)
     app_sub = st.session_state.get("app_subtitle", DEFAULT_APP_SUBTITLE)
