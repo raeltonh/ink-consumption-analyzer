@@ -1,7 +1,16 @@
 from __future__ import annotations
-import time
-import streamlit as st
-st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
+
+import os
+import sys
+from pathlib import Path
+
+import streamlit as st  # <<< importe o Streamlit antes de usá-lo
+# --- constantes usadas no título/ícone ---
+DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
+PAGE_ICON = "🖨️"  # use um emoji simples; depois podemos trocar por um arquivo
+
+# >>> ESTE DEVE SER O PRIMEIRO COMANDO DO STREAMLIT <<<
+st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=PAGE_ICON, layout="wide")
 
 # -*- coding: utf-8 -*-
 # 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
