@@ -24,7 +24,6 @@ import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
-import streamlit as st
 import os as _os
 
 
@@ -105,9 +104,9 @@ _icon = _load_asset_image("page_icon") or "🖨️"
 # Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
-st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
-
-# ---------- Fast/Safe boot block ----------
+# st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
+# 
+# # ---------- Fast/Safe boot block ----------
 SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
 try:
     _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
@@ -4059,7 +4058,7 @@ def ui_single():
             df_vars = st.data_editor(_vars_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_other_vars_editor")
             st.session_state[f"{prefix}_other_vars"] = ensure_df(df_vars, ["Name","Value"]).to_dict(orient="records")
     
-            fix_mode = str(st.session_state.get(f"{prefix}_fix_mode", "Direct per m²"))
+            fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0 if (str(st.session_state.get(f"{prefix}_fix_mode", "Direct per unit")).startswith("Direct")) else 1, horizontal=True, key=f"{prefix}_fix_mode", help="Choose direct fixed allocation per unit, or compute $/unit by entering monthly fixed costs + monthly production.")
     
             if fix_mode.startswith("Direct"):
                 with st_div("ink-fixed-grid"):
@@ -4118,13 +4117,6 @@ def ui_single():
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
-        st.radio(
-            "Fixed costs mode",
-            ["Direct per m²", "Monthly allocation"],
-            horizontal=True,
-            key="single_fix_mode",
-            help="Choose how to handle fixed costs: per m² directly, or allocate via monthly fixed costs + monthly production.",
-        )
         job_inputs_single("single", "Job")
 
     # ---------- Shared costs & currency (Single) ----------
@@ -4261,7 +4253,11 @@ def ui_single():
 
     st.markdown("---")
     if st.button("Calcular", type="primary", key="single_btn_calc"):
+    try:
         run_single_job(SYM, FX)
+    except Exception as e:
+        st.error("Single calculation failed — see details below.")
+        st.exception(e)
         st.success("Job calculado.")
 
     # ---------- Render panels ----------
