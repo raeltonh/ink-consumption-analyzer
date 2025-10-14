@@ -818,6 +818,76 @@ def ui_sales_quick_quote():
         st.session_state["sales_zip_bytes"] = up.getvalue()
     z = st.session_state.get("sales_zip_bytes")
 
+    if z:
+        try:
+            st.markdown("**Preview (optional ZIP)**")
+            files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales")
+            m_prev, t_prev = st.columns(2)
+            m_prev.metric("XML files", len(xmls))
+            t_prev.metric("Preview images", len(jpgs) + len(tifs))
+
+            chan_map = {}
+            for path in tifs:
+                ch = get_channel_from_filename(path.split("/")[-1])
+                if ch:
+                    chan_map[ch] = path
+
+            channel_options = ["Preview"] + sorted(chan_map.keys())
+            selected_channel = st.radio(
+                "View",
+                channel_options,
+                index=channel_options.index(st.session_state.get("sales_preview_channel", "Preview"))
+                if st.session_state.get("sales_preview_channel", "Preview") in channel_options else 0,
+                horizontal=True,
+                key="sales_preview_channel",
+            )
+
+            c_w, c_h = st.columns(2)
+            prev_w = c_w.slider(
+                "Preview width (px)",
+                320,
+                900,
+                int(st.session_state.get("sales_prev_w", 520)),
+                10,
+                key="sales_prev_w",
+            )
+            prev_h = c_h.slider(
+                "Preview height (px)",
+                260,
+                800,
+                int(st.session_state.get("sales_prev_h", 400)),
+                10,
+                key="sales_prev_h",
+            )
+            fill_preview = st.checkbox(
+                "Fill preview image (JPG)",
+                value=st.session_state.get("sales_fill_preview", True),
+                key="sales_fill_preview",
+            )
+            trim_channels = st.checkbox(
+                "Auto-trim white margins (channels)",
+                value=st.session_state.get("sales_trim_channels", True),
+                key="sales_trim_channels",
+            )
+
+            inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
+            if inner_path:
+                preview_fragment(
+                    "sales_preview",
+                    z,
+                    inner_path,
+                    width=int(prev_w),
+                    height=int(prev_h),
+                    fill_flag=fill_preview if selected_channel == "Preview" else False,
+                    trim_flag=trim_channels if selected_channel != "Preview" else False,
+                    max_side=int(prev_w * 1.35),
+                    caption=inner_path or "Preview",
+                )
+            else:
+                st.info("Preview not available in this ZIP.")
+        except Exception as exc:
+            st.info(f"Preview unavailable: {exc}")
+
     st.markdown("---")
     # Aligned grid for Sales inputs with 3-column first row
     with st_div("ink-fixed-grid"):
@@ -2094,9 +2164,8 @@ def build_comparison_pdf_matplotlib(channels: List[str], yA: List[float], yB: Li
 def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
     """Render inputs for a Compare job (A or B). Extracted from ui_compare_option_b for reuse."""
     files, xmls, jpgs, tifs, _ = read_zip_listing(zbytes, cache_ns=prefix)
-    submitted = False
-    with st.form(key=f"{prefix}_form"):
-    
+    with st.container():
+
         # XML selection
         xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls)-1, xmls.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls else 0
         xml_sel = st.selectbox("XML (ml/m² base)", options=xmls, index=xml_default, key=f"{prefix}_xml_sel")
@@ -2166,20 +2235,26 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
             with st_div("ink-fixed-grid"):
                 mcols = st.columns(3)
                 mcols[0].number_input(
-                f"Manual — Color (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_c"
-            )
+                    f"Manual — Color (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_c",
+                )
                 mcols[1].number_input(
-                f"Manual — White (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_w"
-            )
+                    f"Manual — White (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_w",
+                )
                 mcols[2].number_input(
-                f"Manual — FOF (ml{per_unit('m2')})",
-                value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-                min_value=0.0, step=0.1, key=f"{prefix}_man_f"
-            )
+                    f"Manual — FOF (ml{per_unit('m2')})",
+                    value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_f",
+                )
     
         # Variable labor + other variables
         lab1, _ = st.columns([1,1])
@@ -2258,9 +2333,8 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
                 pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
             with st_div("ink-fixed-grid"):
                 st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-    
-            submitted = st.form_submit_button(f"Apply {label}")
 
+        submitted = st.button(f"Apply {label}", key=f"{prefix}_apply_btn", type="primary")
         if submitted:
             if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
                 sync_mode_scalers_from_prefix(prefix)
@@ -3979,8 +4053,7 @@ def ui_single():
     # ---------- Job — Inputs (Apply), placed right below charts ----------
     def job_inputs_single(prefix: str, label: str):
         files_, xmls_, jpgs_, tifs_, _ = read_zip_listing(z, cache_ns="single")
-        submitted = False
-        with st.form(key=f"{prefix}_form"):
+        with st.container():
             xml_default = 0 if not st.session_state.get(f"{prefix}_xml_sel") else max(0, min(len(xmls_)-1, xmls_.index(st.session_state.get(f"{prefix}_xml_sel")))) if st.session_state.get(f"{prefix}_xml_sel") in xmls_ else 0
             xml_sel = st.selectbox("XML (ml/m² base)", options=xmls_, index=xml_default, key=f"{prefix}_xml_sel")
             xml_bytes_hdr = read_bytes_from_zip(z, st.session_state.get(f"{prefix}_xml_sel", xml_sel), cache_ns="single")
@@ -4035,17 +4108,23 @@ def ui_single():
                 mcols[0].number_input(
                     f"Manual — Color (ml{per_unit('m2')})",
                     value=float(st.session_state.get(f"{prefix}_man_c", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_c"
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_c",
                 )
                 mcols[1].number_input(
                     f"Manual — White (ml{per_unit('m2')})",
                     value=float(st.session_state.get(f"{prefix}_man_w", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_w"
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_w",
                 )
                 mcols[2].number_input(
                     f"Manual — FOF (ml{per_unit('m2')})",
                     value=float(st.session_state.get(f"{prefix}_man_f", 0.0)),
-                    min_value=0.0, step=0.1, key=f"{prefix}_man_f"
+                    min_value=0.0,
+                    step=0.1,
+                    key=f"{prefix}_man_f",
                 )
     
     
@@ -4107,7 +4186,7 @@ def ui_single():
                 pv4.number_input("Taxes (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)), step=0.5, key=f"{prefix}_tax")
                 pv5.number_input("Fees/Terms (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)), step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-            submitted = st.form_submit_button("Apply Job")
+            submitted = st.button("Apply Job", key=f"{prefix}_apply_btn", type="primary")
             if submitted:
                 if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
                     sync_mode_scalers_from_prefix(prefix)
@@ -4848,7 +4927,7 @@ def ui_compare():
                 f"Speed: **{speed_label(UNIT, PRINT_MODES[mode_sel]['speed'], w_xml_def)}**"
             )
 
-            with st.form(f"{key_prefix}_sim_form", clear_on_submit=False):
+            with st.container():
                 st.markdown("**Production dimensions (confirm/adjust)**")
                 a1, a2, a3 = st.columns(3)
                 width_m = a1.number_input(
@@ -4934,7 +5013,7 @@ def ui_compare():
                 terms_pct     = p4.number_input("Fees/Terms (%)", value=2.10, min_value=0.0, step=0.05, key=f"{key_prefix}_terms")
                 round_step    = float(p5.selectbox("Round to", ["0.01", "0.05", "0.10"], index=1, key=f"{key_prefix}_round"))
 
-                submitted = st.form_submit_button(f"Calculate production — {label}", type="primary")
+                submitted = st.button(f"Calculate production — {label}", key=f"{key_prefix}_calc_btn", type="primary")
 
             result_payload = None
             if submitted:
