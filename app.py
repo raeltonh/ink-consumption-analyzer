@@ -2260,10 +2260,14 @@ def compare_job_inputs(prefix: str, label: str, zbytes: bytes):
                 st.columns(1)[0].selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
     
             submitted = st.form_submit_button(f"Apply {label}")
-
+            if submitted:
+                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                    sync_mode_scalers_from_prefix(prefix)
+                st.success(f"{label} saved. Now click 'Calculate'.")
         if submitted:
             if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
                 sync_mode_scalers_from_prefix(prefix)
+            st.success(f"{label} saved. Now click 'Calculate'.")
             st.success(f"{label} saved. Now click 'Calculate A and B'.")
 
 # =========================
