@@ -745,9 +745,12 @@ def breakeven_figure(price_u: float, variable_u: float, fixed_month: float,
         v = float(variable_u or 0.0) * float(fx or 1.0)
         f = float(fixed_month or 0.0) * float(fx or 1.0)
         be_units = (f / (p - v)) if (p > v) else 0.0
-        q_max = max(10, int(math.ceil(be_units * 1.6)))
-        q_max = min(q_max, 100000)
-        x = np.linspace(0, q_max, 60)
+        if be_units <= 0:
+            q_max = 10.0
+        else:
+            buffer = max(10.0, be_units * 0.15)
+            q_max = min(be_units + buffer, be_units * 4.0, 2_000_000.0)
+        x = np.linspace(0, q_max, 80)
         revenue = p * x
         total_cost = f + v * x
         fig = go.Figure()
