@@ -659,6 +659,13 @@ def default_width_value(fallback: float) -> float:
         return float(st.session_state.get("global_linear_width", fallback))
     return fallback
 
+def convert_ml_map_for_unit(ml_map: dict, unit_mode: str, width_m: float) -> dict:
+    """Convert a ml/m² map to the currently selected display unit."""
+    if unit_mode == "m2":
+        return {k: float(v or 0.0) for k, v in (ml_map or {}).items()}
+    width = max(1e-9, float(width_m or st.session_state.get("global_linear_width", 1.0)))
+    return {k: float(v or 0.0) * width for k, v in (ml_map or {}).items()}
+
 def speed_label(unit_mode: str, speed_m2h: float, width_m: float) -> str:
     """Return human-friendly speed label respecting the selected unit."""
     m2_per_h = float(speed_m2h or 0.0)
@@ -1017,6 +1024,7 @@ def ui_sales_quick_quote():
             ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
         else:
             ml_map_m2 = {"Color": c, "White": w, "FOF": f}
+        display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_m)
 
         if z and preview_metadata:
             try:
@@ -1043,6 +1051,14 @@ def ui_sales_quick_quote():
                     )
                 else:
                     st.info("Preview not available in this ZIP.")
+                unit_cons_label = consumption_unit(UNIT)
+                if selected_channel != "Preview" and display_ml_map:
+                    v = display_ml_map.get(selected_channel)
+                    if v is not None:
+                        st.caption(f"**{selected_channel}**: {v:.2f} {unit_cons_label}")
+                if display_ml_map:
+                    total_display = sum(float(v or 0.0) for v in display_ml_map.values())
+                    st.markdown(f"Total consumption: **{total_display:.2f} {unit_cons_label}**")
             except Exception as exc:
                 st.info(f"Preview unavailable: {exc}")
 
@@ -1157,9 +1173,9 @@ def ui_sales_quick_quote():
         if show_charts:
             fxv = FX if OUTC=="Local" else 1.0
             # Per-unit contributions
-            color_ml_u = float(ml_map_m2.get("Color", 0.0))
-            white_ml_u = float(ml_map_m2.get("White", 0.0))
-            fof_ml_u   = float(ml_map_m2.get("FOF",   0.0))
+            color_ml_u = float(display_ml_map.get("Color", 0.0))
+            white_ml_u = float(display_ml_map.get("White", 0.0))
+            fof_ml_u   = float(display_ml_map.get("FOF",   0.0))
             color_u = (color_ml_u/1000.0) * float(ink_c or 0.0)
             white_u = (white_ml_u/1000.0) * float(ink_w or 0.0)
             fof_u   = (fof_ml_u  /1000.0) * float(ink_f or 0.0)
