@@ -1,16 +1,38 @@
 from __future__ import annotations
 
-import os
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Tuple, List, TYPE_CHECKING
+
+import datetime as dt
+import importlib
+import io
+import math
+import os
+import pathlib
+import re
+import tempfile
+import textwrap
+import types
+import unicodedata
+import warnings
+import zipfile
+import hashlib
+import time
+import xml.etree.ElementTree as ET
 
 import streamlit as st
 from PIL import Image as PILImage
 
+ROOT = Path(__file__).parent
+ASSETS = ROOT / "assets"
+WORK_DIR = Path(tempfile.gettempdir()) / "ink_analyzer"
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+os.environ.setdefault("HOME", "/tmp")
+(pathlib.Path(os.environ["HOME"]) / ".streamlit").mkdir(parents=True, exist_ok=True)
+
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
-ASSETS = Path(__file__).parent / "assets"
 
 
 def _resolve_page_icon() -> str | "Image.Image":
@@ -32,32 +54,81 @@ def _resolve_page_icon() -> str | "Image.Image":
 
 st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_resolve_page_icon(), layout="wide")
 
-# Ensure Streamlit config dir exists early
-os.environ.setdefault("HOME", "/tmp")
-(Path(os.environ["HOME"]) / ".streamlit").mkdir(parents=True, exist_ok=True)
-# ---------- Fast/Safe boot block ----------
-SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
+
+_os = os
+
+class _LazyModule(types.ModuleType):
+    """Lazy loader that defers heavy imports until first attribute access."""
+
+    def __init__(self, module_name: str, attr_name: str | None = None):
+        super().__init__(module_name)
+        self._module_name = module_name
+        self._attr_name = attr_name
+        self._module = None
+
+    def _load(self):
+        if self._module is None:
+            module = importlib.import_module(self._module_name)
+            if self._attr_name:
+                module = getattr(module, self._attr_name)
+            self._module = module
+        return self._module
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+    def __setattr__(self, key, value):
+        if key.startswith("_"):
+            super().__setattr__(key, value)
+        else:
+            setattr(self._load(), key, value)
+
+    def __call__(self, *args, **kwargs):
+        return self._load()(*args, **kwargs)
+
 try:
-    _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
-    _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
-    SAFE_MODE = bool(_toggle_val)
+    import numpy as np  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - fallback for minimal environments
+    np = _LazyModule("numpy")
+try:
+    import pandas as pd  # type: ignore[import-not-found]
 except Exception:
-    pass
+    pd = _LazyModule("pandas")
+Image = _LazyModule("PIL.Image")
+ImageFile = _LazyModule("PIL.ImageFile")
+go = _LazyModule("plotly.graph_objects")
+plt = _LazyModule("matplotlib.pyplot")
+PdfPages = _LazyModule("matplotlib.backends.backend_pdf", "PdfPages")
+pio = _LazyModule("plotly.io")
 
-def safe_section(title, fn):
-    try:
-        with st.expander(title, expanded=True):
-            fn()
-    except Exception as e:
-        st.error(f"⚠️ {title} falhou: {e}")
-        if st.checkbox(f"Mostrar detalhes ({title})", key=f"tb_{title}"):
-            st.exception(e)
+if TYPE_CHECKING:  # pragma: no cover - helps IDEs/type-checkers
+    import numpy as np  # type: ignore[no-redef]
+    import pandas as pd  # type: ignore[no-redef]
+    from PIL import Image as Image  # type: ignore[no-redef]
+    from PIL import ImageFile as ImageFile  # type: ignore[no-redef]
+    import plotly.graph_objects as go  # type: ignore[no-redef]
+    import matplotlib.pyplot as plt  # type: ignore[no-redef]
+    from matplotlib.backends.backend_pdf import PdfPages  # type: ignore[no-redef]
+    import plotly.io as pio  # type: ignore[no-redef]
+    from PIL.Image import Image as PILImageType
+else:
+    PILImageType = Any  # type: ignore[assignment]
 
-def _mpl():
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
-    return plt, PdfPages
-# ---------- End fast/safe block ----------
+fragment_decorator = getattr(st, "fragment", None)
+if fragment_decorator is None:
+    fragment_decorator = getattr(st, "experimental_fragment", None)
+
+pio.templates.default = "plotly_white"
+
+def _load_asset_image(basename: str):
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        path = ASSETS / f"{basename}{ext}"
+        try:
+            return Image.open(path)
+        except Exception:
+            continue
+    return None
+
 
 # Pillow safety
 Image.MAX_IMAGE_PIXELS = None
