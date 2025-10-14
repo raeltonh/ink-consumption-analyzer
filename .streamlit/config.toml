@@ -1,11 +1,2 @@
-[server]
-headless = true
-address = "127.0.0.1"
-port = 8570
-enableCORS = false
-enableXsrfProtection = false
-
-[browser]
-serverAddress = "127.0.0.1"
-serverPort = 8570
-gatherUsageStats = false
+[client]
+showErrorDetails = true
