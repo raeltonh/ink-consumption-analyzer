@@ -3,6 +3,9 @@
 # PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
 from __future__ import annotations
+import os, pathlib
+os.environ.setdefault("HOME", "/tmp")
+pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
 
 import importlib
 import types
@@ -75,6 +78,10 @@ if TYPE_CHECKING:  # pragma: no cover - helps IDEs/type-checkers
     from PIL.Image import Image as PILImageType
 else:
     PILImageType = Any  # type: ignore[assignment]
+
+fragment_decorator = getattr(st, "fragment", None)
+if fragment_decorator is None:
+    fragment_decorator = getattr(st, "experimental_fragment", None)
 
 pio.templates.default = "plotly_white"   # base clara; gráficos específicos também usam "plotly_white"
 
@@ -1111,7 +1118,7 @@ def make_preview_thumb(raw_img: bytes, target_w: int, target_h: int, *, fill: bo
     im.save(buf, **save_kwargs)
     return buf.getvalue()
 
-@st.experimental_fragment
+@fragment_decorator if fragment_decorator else (lambda fn: fn)
 def preview_fragment(fragment_key: str, zip_bytes: bytes | None, inner_path: str | None, *, width: int, height: int, fill_flag: bool, trim_flag: bool, max_side: int, caption: str):
     if not zip_bytes or not inner_path:
         st.info("Preview unavailable for this selection.")
@@ -1321,7 +1328,9 @@ def parse_xml(xml_bytes: bytes):
     height = f(root.findtext("Height","0"))    # cm
     area_m2 = (width/100.0)*(height/100.0)
 
-    ml_node = root.find("NumberOfMlPerSeparation") or root.find("NumberOfMlPerSeperation")
+    ml_node = root.find("NumberOfMlPerSeparation")
+    if ml_node is None:
+        ml_node = root.find("NumberOfMlPerSeperation")
     ml_per_sep = {}
     if ml_node is not None:
         for child in ml_node:

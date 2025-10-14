@@ -1,5 +1,7 @@
 .venv/
-dist/
 __pycache__/
-*.log
 .DS_Store
+*.zip
+*.pyc
+.git/
+.gitignore
