@@ -1,6 +1,7 @@
 from __future__ import annotations
 import time
 import streamlit as st
+from PIL import Image
 st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
 
 # -*- coding: utf-8 -*-
@@ -24,7 +25,6 @@ import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
-import streamlit as st
 import os as _os
 
 
@@ -4077,18 +4077,18 @@ def ui_single():
             else:
                 st.markdown('<div class="ink-callout"><b>Monthly fixed costs</b> — labor, leasing, depreciation, overheads and other items.</div>', unsafe_allow_html=True)
                 fx1, fx2, fx3, fx4 = st.columns(4)
-                fx1.number_input("Labor (monthly)",        min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)),   step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
+                fx1.number_input("Labor (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0)), step=10.0, key=f"{prefix}_fix_labor_month", help="Salaries or fixed staff per month.")
                 fx2.number_input("Leasing/Rent (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_leasing_month", 0.0)), step=10.0, key=f"{prefix}_fix_leasing_month", help="Printer leasing, rent, subscriptions, RIP, etc.")
-                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)),    step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
-                fx4.number_input("Overheads (monthly)",    min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)),    step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
-    
+                fx3.number_input("Depreciation (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_depr_month", 0.0)), step=10.0, key=f"{prefix}_fix_depr_month", help="Monthly CAPEX (depreciation).")
+                fx4.number_input("Overheads (monthly)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_fix_over_month", 0.0)), step=10.0, key=f"{prefix}_fix_over_month", help="Base energy, insurance, maintenance, overheads.")
+
                 st.caption("Other fixed (monthly)")
                 _fix_input = ensure_df(st.session_state.get(f"{prefix}_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
                 df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key=f"{prefix}_fix_others_editor")
                 st.session_state[f"{prefix}_fix_others"] = ensure_df(df_fix, ["Name","Value"]).to_dict(orient="records")
-    
+
                 prod_m = monthly_production_inputs(get_unit(), unit_label_short(get_unit()), state_prefix=f"{prefix}_fix")
-    
+
                 sum_others = ensure_df(st.session_state.get(f"{prefix}_fix_others", []), ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum() if st.session_state.get(f"{prefix}_fix_others") else 0.0
                 total_fix_m = (
                     float(st.session_state.get(f"{prefix}_fix_labor_month", 0.0))
@@ -4100,19 +4100,18 @@ def ui_single():
                 alloc = (total_fix_m / prod_m) if prod_m > 0 else 0.0
                 st.metric(f"Fixed allocation ({per_unit(get_unit())})", f"{alloc:.4f}")
                 st.caption(f"Monthly fixed total: US$ {total_fix_m:,.2f} • Production: {prod_m:,.0f} {unit_label_short(get_unit())}/month")
-    
+
                 pv2, pv3, pv4, pv5 = st.columns(4)
-                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f'{prefix}_price', 0.0)), step=0.10, key=f"{prefix}_price")
-                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f'{prefix}_margin', 20.0)), step=0.5, key=f"{prefix}_margin")
-                pv4.number_input("Taxes (%)",         min_value=0.0, value=float(st.session_state.get(f'{prefix}_tax', 10.0)),    step=0.5, key=f"{prefix}_tax")
-                pv5.number_input("Fees/Terms (%)",    min_value=0.0, value=float(st.session_state.get(f'{prefix}_terms', 2.10)),  step=0.05, key=f"{prefix}_terms")
+                pv2.number_input(f"Price {per_unit(get_unit())}", min_value=0.0, value=float(st.session_state.get(f"{prefix}_price", 0.0)), step=0.10, key=f"{prefix}_price")
+                pv3.number_input("Target margin (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_margin", 20.0)), step=0.5, key=f"{prefix}_margin")
+                pv4.number_input("Taxes (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_tax", 10.0)), step=0.5, key=f"{prefix}_tax")
+                pv5.number_input("Fees/Terms (%)", min_value=0.0, value=float(st.session_state.get(f"{prefix}_terms", 2.10)), step=0.05, key=f"{prefix}_terms")
                 st.selectbox("Round to", ["0.01", "0.05", "0.10"], index={"0.01":0,"0.05":1,"0.10":2}.get(str(st.session_state.get(f"{prefix}_round", 0.05)),1), key=f"{prefix}_round", help="Rounding step for suggested price.")
-    
-            submitted = st.form_submit_button(f"Apply {label}")
-        if submitted:
-            if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
-                sync_mode_scalers_from_prefix(prefix)
-            st.success(f"{label} saved. Now click 'Calculate'.")
+            submitted = st.form_submit_button("Apply Job")
+            if submitted:
+                if str(st.session_state.get(f"{prefix}_cons_source", "")).startswith("XML + mode"):
+                    sync_mode_scalers_from_prefix(prefix)
+                st.success(f"{label} saved. Now click 'Calculate'.")
 
     st.markdown('<div class="ink-callout"><b>Job — Inputs (Apply)</b> — Fill and click <b>Apply</b> to save.</div>', unsafe_allow_html=True)
     with st.expander("Job — Inputs (Apply)", expanded=False):
