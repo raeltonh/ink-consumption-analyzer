@@ -1,65 +1,35 @@
 from __future__ import annotations
+import time
+import streamlit as st
+st.set_page_config(page_title="Presto MAX — Analyzer", page_icon="🧪", layout="wide")
+
+# -*- coding: utf-8 -*-
+# 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
+# PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
 
 from pathlib import Path
-from typing import Any, Dict, Tuple, List, TYPE_CHECKING
-
-import datetime as dt
-import importlib
-import io
-import math
-import os
-import pathlib
-import re
 import tempfile
-import textwrap
+import os, pathlib
+os.environ.setdefault("HOME", "/tmp")
+pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
+
+import importlib
 import types
 import unicodedata
-import warnings
-import zipfile
-import hashlib
-import time
+
+def _deaccent(s: str) -> str:
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+
+import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
 import xml.etree.ElementTree as ET
+from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
 import streamlit as st
-from PIL import Image as PILImage
+import os as _os
 
-ROOT = Path(__file__).parent
-ASSETS = ROOT / "assets"
-WORK_DIR = Path(tempfile.gettempdir()) / "ink_analyzer"
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-os.environ.setdefault("HOME", "/tmp")
-(pathlib.Path(os.environ["HOME"]) / ".streamlit").mkdir(parents=True, exist_ok=True)
-
-DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
-DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
-
-
-def _resolve_page_icon() -> str | "Image.Image":
-    for ext in (".png", ".jpg", ".jpeg", ".webp"):
-        candidate = ASSETS / f"page_icon{ext}"
-        if candidate.exists():
-            try:
-                return PILImage.open(candidate)
-            except Exception:
-                continue
-    fallback = ASSETS / "app-icon.png"
-    if fallback.exists():
-        try:
-            return PILImage.open(fallback)
-        except Exception:
-            pass
-    return "🖨️"
-
-
-st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_resolve_page_icon(), layout="wide")
-
-
-_os = os
 
 class _LazyModule(types.ModuleType):
     """Lazy loader that defers heavy imports until first attribute access."""
-
     def __init__(self, module_name: str, attr_name: str | None = None):
         super().__init__(module_name)
         self._module_name = module_name
@@ -86,13 +56,14 @@ class _LazyModule(types.ModuleType):
     def __call__(self, *args, **kwargs):
         return self._load()(*args, **kwargs)
 
+# Lazy heavy modules (resolved on demand)
 try:
     import numpy as np  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - fallback for minimal environments
     np = _LazyModule("numpy")
 try:
     import pandas as pd  # type: ignore[import-not-found]
-except Exception:
+except Exception:  # pragma: no cover
     pd = _LazyModule("pandas")
 Image = _LazyModule("PIL.Image")
 ImageFile = _LazyModule("PIL.ImageFile")
@@ -118,17 +89,45 @@ fragment_decorator = getattr(st, "fragment", None)
 if fragment_decorator is None:
     fragment_decorator = getattr(st, "experimental_fragment", None)
 
-pio.templates.default = "plotly_white"
+pio.templates.default = "plotly_white"   # base clara; gráficos específicos também usam "plotly_white"
 
+# ---------------- Config & CSS (light, professional theme) ----------------
 def _load_asset_image(basename: str):
     for ext in (".png", ".jpg", ".jpeg", ".webp"):
-        path = ASSETS / f"{basename}{ext}"
+        path = f"assets/{basename}{ext}"
         try:
             return Image.open(path)
         except Exception:
             continue
     return None
 
+_icon = _load_asset_image("page_icon") or "🖨️"
+# Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
+DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
+DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
+# ---------- Fast/Safe boot block ----------
+SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
+try:
+    _toggle_val = st.session_state.get("SAFE_MODE_TOGGLE", SAFE_MODE)
+    _toggle_val = st.sidebar.toggle("⚡ Fast/Safe mode (abrir leve)", value=_toggle_val, key="SAFE_MODE_TOGGLE")
+    SAFE_MODE = bool(_toggle_val)
+except Exception:
+    pass
+
+def safe_section(title, fn):
+    try:
+        with st.expander(title, expanded=True):
+            fn()
+    except Exception as e:
+        st.error(f"⚠️ {title} falhou: {e}")
+        if st.checkbox(f"Mostrar detalhes ({title})", key=f"tb_{title}"):
+            st.exception(e)
+
+def _mpl():
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    return plt, PdfPages
+# ---------- End fast/safe block ----------
 
 # Pillow safety
 Image.MAX_IMAGE_PIXELS = None
