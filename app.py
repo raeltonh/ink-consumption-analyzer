@@ -1,121 +1,40 @@
 from __future__ import annotations
 
 import os
-import sys
+import time
 from pathlib import Path
-
-import streamlit as st  # <<< importe o Streamlit antes de usá-lo
-# --- constantes usadas no título/ícone ---
-DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
-PAGE_ICON = "🖨️"  # use um emoji simples; depois podemos trocar por um arquivo
-
-# >>> ESTE DEVE SER O PRIMEIRO COMANDO DO STREAMLIT <<<
-st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=PAGE_ICON, layout="wide")
-
-# -*- coding: utf-8 -*-
-# 🖨️ Ink Analyzer (Streamlit) — UI PT-BR — v2025-08-21
-# PART 1/5 — Imports, Theme/CSS, Constants, Helpers (XML/ZIP/Simulation), Shared functions.
-
-from pathlib import Path
-import tempfile
-import os, pathlib
-os.environ.setdefault("HOME", "/tmp")
-pathlib.Path(os.path.join(os.environ["HOME"], ".streamlit")).mkdir(parents=True, exist_ok=True)
-
-import importlib
-import types
-import unicodedata
-
-def _deaccent(s: str) -> str:
-    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
-
-import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
-import xml.etree.ElementTree as ET
-from typing import Any, Dict, Tuple, List, TYPE_CHECKING
+from typing import Any, Dict, List, Tuple, TYPE_CHECKING
 
 import streamlit as st
-import os as _os
+from PIL import Image as PILImage
 
-
-class _LazyModule(types.ModuleType):
-    """Lazy loader that defers heavy imports until first attribute access."""
-    def __init__(self, module_name: str, attr_name: str | None = None):
-        super().__init__(module_name)
-        self._module_name = module_name
-        self._attr_name = attr_name
-        self._module = None
-
-    def _load(self):
-        if self._module is None:
-            module = importlib.import_module(self._module_name)
-            if self._attr_name:
-                module = getattr(module, self._attr_name)
-            self._module = module
-        return self._module
-
-    def __getattr__(self, item):
-        return getattr(self._load(), item)
-
-    def __setattr__(self, key, value):
-        if key.startswith("_"):
-            super().__setattr__(key, value)
-        else:
-            setattr(self._load(), key, value)
-
-    def __call__(self, *args, **kwargs):
-        return self._load()(*args, **kwargs)
-
-# Lazy heavy modules (resolved on demand)
-try:
-    import numpy as np  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover - fallback for minimal environments
-    np = _LazyModule("numpy")
-try:
-    import pandas as pd  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover
-    pd = _LazyModule("pandas")
-Image = _LazyModule("PIL.Image")
-ImageFile = _LazyModule("PIL.ImageFile")
-go = _LazyModule("plotly.graph_objects")
-plt = _LazyModule("matplotlib.pyplot")
-PdfPages = _LazyModule("matplotlib.backends.backend_pdf", "PdfPages")
-pio = _LazyModule("plotly.io")
-
-if TYPE_CHECKING:  # pragma: no cover - helps IDEs/type-checkers
-    import numpy as np  # type: ignore[no-redef]
-    import pandas as pd  # type: ignore[no-redef]
-    from PIL import Image as Image  # type: ignore[no-redef]
-    from PIL import ImageFile as ImageFile  # type: ignore[no-redef]
-    import plotly.graph_objects as go  # type: ignore[no-redef]
-    import matplotlib.pyplot as plt  # type: ignore[no-redef]
-    from matplotlib.backends.backend_pdf import PdfPages  # type: ignore[no-redef]
-    import plotly.io as pio  # type: ignore[no-redef]
-    from PIL.Image import Image as PILImageType
-else:
-    PILImageType = Any  # type: ignore[assignment]
-
-fragment_decorator = getattr(st, "fragment", None)
-if fragment_decorator is None:
-    fragment_decorator = getattr(st, "experimental_fragment", None)
-
-pio.templates.default = "plotly_white"   # base clara; gráficos específicos também usam "plotly_white"
-
-# ---------------- Config & CSS (light, professional theme) ----------------
-def _load_asset_image(basename: str):
-    for ext in (".png", ".jpg", ".jpeg", ".webp"):
-        path = f"assets/{basename}{ext}"
-        try:
-            return Image.open(path)
-        except Exception:
-            continue
-    return None
-
-_icon = _load_asset_image("page_icon") or "🖨️"
-# Default app title/subtitle (can be overridden via st.session_state['app_title'/'app_subtitle'])
 DEFAULT_APP_TITLE = "Presto MAX — ml/m² & ROI Analyzer"
 DEFAULT_APP_SUBTITLE = "ml/m², pixels, costs and A×B comparisons"
-st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_icon, layout="wide")
+ASSETS = Path(__file__).parent / "assets"
 
+
+def _resolve_page_icon() -> str | "Image.Image":
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        candidate = ASSETS / f"page_icon{ext}"
+        if candidate.exists():
+            try:
+                return PILImage.open(candidate)
+            except Exception:
+                continue
+    fallback = ASSETS / "app-icon.png"
+    if fallback.exists():
+        try:
+            return PILImage.open(fallback)
+        except Exception:
+            pass
+    return "🖨️"
+
+
+st.set_page_config(page_title=DEFAULT_APP_TITLE, page_icon=_resolve_page_icon(), layout="wide")
+
+# Ensure Streamlit config dir exists early
+os.environ.setdefault("HOME", "/tmp")
+(Path(os.environ["HOME"]) / ".streamlit").mkdir(parents=True, exist_ok=True)
 # ---------- Fast/Safe boot block ----------
 SAFE_MODE = (_os.getenv("INK_SAFE", "1") != "0")
 try:
