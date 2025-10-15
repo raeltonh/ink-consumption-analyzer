@@ -998,6 +998,38 @@ def ui_sales_quick_quote():
             except Exception as exc:
                 st.info(f"Preview controls unavailable: {exc}")
 
+        if z and preview_metadata:
+            try:
+                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
+                prev_w = int(st.session_state.get("sales_prev_w", 520))
+                prev_h = int(st.session_state.get("sales_prev_h", 400))
+                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
+                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
+                chan_map = preview_metadata.get("chan_map") or {}
+                jpgs = preview_metadata.get("jpgs") or []
+                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
+                left_prev, right_prev = st.columns([1.15, 1.0])
+                with left_prev:
+                    st.markdown("**Preview (optional ZIP)**")
+                    if inner_path:
+                        preview_fragment(
+                            "sales_preview",
+                            z,
+                            inner_path,
+                            width=prev_w,
+                            height=prev_h,
+                            fill_flag=fill_preview if selected_channel == "Preview" else False,
+                            trim_flag=trim_channels if selected_channel != "Preview" else False,
+                            max_side=int(prev_w * 1.35),
+                            caption=inner_path or "Preview",
+                        )
+                    else:
+                        st.info("Preview not available in this ZIP.")
+                with right_prev:
+                    st.empty()
+            except Exception as exc:
+                st.info(f"Preview unavailable: {exc}")
+
         st.markdown("---")
         with st_div("ink-fixed-grid"):
             s1a, s1b, s1c = st.columns(3)
@@ -1026,42 +1058,6 @@ def ui_sales_quick_quote():
         else:
             ml_map_m2 = {"Color": c, "White": w, "FOF": f}
         display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_m)
-
-        if z and preview_metadata:
-            try:
-                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
-                prev_w = int(st.session_state.get("sales_prev_w", 520))
-                prev_h = int(st.session_state.get("sales_prev_h", 400))
-                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
-                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
-                chan_map = preview_metadata.get("chan_map") or {}
-                jpgs = preview_metadata.get("jpgs") or []
-                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
-                st.markdown("**Preview (optional ZIP)**")
-                if inner_path:
-                    preview_fragment(
-                        "sales_preview",
-                        z,
-                        inner_path,
-                        width=prev_w,
-                        height=prev_h,
-                        fill_flag=fill_preview if selected_channel == "Preview" else False,
-                        trim_flag=trim_channels if selected_channel != "Preview" else False,
-                        max_side=int(prev_w * 1.35),
-                        caption=inner_path or "Preview",
-                    )
-                else:
-                    st.info("Preview not available in this ZIP.")
-                unit_cons_label = consumption_unit(UNIT)
-                if selected_channel != "Preview" and display_ml_map:
-                    v = display_ml_map.get(selected_channel)
-                    if v is not None:
-                        st.caption(f"**{selected_channel}**: {v:.2f} {unit_cons_label}")
-                if display_ml_map:
-                    total_display = sum(float(v or 0.0) for v in display_ml_map.values())
-                    st.markdown(f"Total consumption: **{total_display:.2f} {unit_cons_label}**")
-            except Exception as exc:
-                st.info(f"Preview unavailable: {exc}")
 
         st.markdown("---")
 
