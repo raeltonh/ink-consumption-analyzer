@@ -998,6 +998,8 @@ def ui_sales_quick_quote():
             except Exception as exc:
                 st.info(f"Preview controls unavailable: {exc}")
 
+        auto_base_ml_map: dict[str, float] = {}
+        auto_display_ml_map: dict[str, float] = {}
         if z and preview_metadata:
             try:
                 selected_channel = st.session_state.get("sales_preview_channel", "Preview")
@@ -1027,6 +1029,29 @@ def ui_sales_quick_quote():
                         st.info("Preview not available in this ZIP.")
                 with right_prev:
                     st.empty()
+
+                # Build automatic consumption map from the first XML in the ZIP
+                try:
+                    _, xml_list, *_ = read_zip_listing(z, cache_ns="sales_xml_cache")
+                except Exception:
+                    xml_list = []
+                if xml_list:
+                    try:
+                        xml_bytes = read_bytes_from_zip(z, xml_list[0], cache_ns="sales_xml_first")
+                        auto_base_ml_map = ml_per_m2_from_xml_bytes(xml_bytes)
+                    except Exception:
+                        auto_base_ml_map = {}
+                auto_display_ml_map = convert_ml_map_for_unit(auto_base_ml_map, UNIT, st.session_state.get("sales_width_m", default_width_value(1.45))) if auto_base_ml_map else {}
+                st.session_state["sales_preview_ml_map_m2"] = dict(auto_base_ml_map or {})
+                st.session_state["sales_preview_ml_map"] = dict(auto_display_ml_map or {})
+                unit_cons_label = consumption_unit(UNIT)
+                if selected_channel != "Preview" and auto_display_ml_map:
+                    val = auto_display_ml_map.get(selected_channel)
+                    if val is not None:
+                        st.caption(f"**{selected_channel}**: {val:.2f} {unit_cons_label}")
+                if auto_display_ml_map:
+                    total_disp = sum(float(v or 0.0) for v in auto_display_ml_map.values())
+                    st.markdown(f"Total consumption: **{total_disp:.2f} {unit_cons_label}**")
             except Exception as exc:
                 st.info(f"Preview unavailable: {exc}")
 
@@ -1039,25 +1064,55 @@ def ui_sales_quick_quote():
                 st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
             cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
 
+        auto_inputs_disabled = bool(auto_base_ml_map)
         with st_div("ink-fixed-grid"):
             s2a, s2b = st.columns(2)
             width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=default_width_value(1.45), step=0.01, key="sales_width_m")
-            c = s2b.number_input(f"Color ({cons_unit})", min_value=0.0, value=6.0, step=0.1, key="sales_c")
+            color_default = float(auto_display_ml_map.get("Color", st.session_state.get("sales_c", 6.0)))
+            c = s2b.number_input(
+                f"Color ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
+                min_value=0.0,
+                value=color_default,
+                step=0.1,
+                key="sales_c",
+                disabled=auto_inputs_disabled,
+            )
 
             s3a, s3b = st.columns(2)
+            white_default = float(auto_display_ml_map.get("White", st.session_state.get("sales_w", 0.0)))
             length_m = s3a.number_input("Length (m)", min_value=0.0, value=1.00, step=0.01, key="sales_length_m")
-            w = s3b.number_input(f"White ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_w")
+            w = s3b.number_input(
+                f"White ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
+                min_value=0.0,
+                value=white_default,
+                step=0.1,
+                key="sales_w",
+                disabled=auto_inputs_disabled,
+            )
 
             s4a, s4b = st.columns(2)
             waste = s4a.number_input("Waste (%)", min_value=0.0, value=2.0, step=0.5, key="sales_waste")
-            f = s4b.number_input(f"FOF ({cons_unit})", min_value=0.0, value=0.0, step=0.1, key="sales_f")
+            fof_default = float(auto_display_ml_map.get("FOF", st.session_state.get("sales_f", 0.0)))
+            f = s4b.number_input(
+                f"FOF ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
+                min_value=0.0,
+                value=fof_default,
+                step=0.1,
+                key="sales_f",
+                disabled=auto_inputs_disabled,
+            )
 
-        if cons_unit == "ml/m":
+        if auto_base_ml_map:
+            ml_map_m2 = dict(auto_base_ml_map)
+        elif cons_unit == "ml/m":
             w_safe = max(1e-9, float(width_m or 0.0))
             ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
         else:
             ml_map_m2 = {"Color": c, "White": w, "FOF": f}
         display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_m)
+        if auto_inputs_disabled:
+            st.session_state["sales_preview_ml_map"] = dict(display_ml_map or {})
+            st.session_state["sales_preview_ml_map_m2"] = dict(ml_map_m2 or {})
 
         st.markdown("---")
 
@@ -3900,12 +3955,13 @@ unit_option = st.radio(
 )
 st.session_state["global_unit"] = "m2" if unit_option.startswith("Square") else "m"
 if st.session_state["global_unit"] == "m":
+    linear_default = st.session_state.get("global_linear_width", 1.40)
     linear_default = st.number_input(
         "Default usable width for linear mode (m)",
         min_value=0.01,
-        value=float(st.session_state.get("global_linear_width", 1.40)),
+        value=float(linear_default),
         step=0.01,
-        key="global_linear_width",
+        key="__global_linear_width_box",
         help="Used to prefill width fields when working in linear meters.",
     )
     st.session_state["global_linear_width"] = float(linear_default)
