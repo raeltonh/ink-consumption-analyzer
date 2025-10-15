@@ -938,27 +938,35 @@ def ui_sales_quick_quote():
             st.session_state["sales_zip_bytes"] = up.getvalue()
         z = st.session_state.get("sales_zip_bytes")
 
-        preview_metadata = None
+        default_width = default_width_value(1.45)
+        xml_list: List[str] = []
+        jpgs: List[str] = []
+        tifs: List[str] = []
+        preview_base_map: dict[str, float] = {}
+        preview_display_map: dict[str, float] = {}
+        xml_width_hint = default_width
+
         if z:
             try:
                 st.markdown("**Preview controls**")
-                files, xmls, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales")
+                files, xml_list, jpgs, tifs, _ = read_zip_listing(z, cache_ns="sales")
                 m_prev, t_prev = st.columns(2)
-                m_prev.metric("XML files", len(xmls))
+                m_prev.metric("XML files", len(xml_list))
                 t_prev.metric("Preview images", len(jpgs) + len(tifs))
 
-                chan_map = {}
+                chan_map: dict[str, str] = {}
                 for path in tifs:
-                    ch = get_channel_from_filename(path.split("/")[-1])
-                    if ch:
-                        chan_map[ch] = path
+                    channel = get_channel_from_filename(path.split("/")[-1])
+                    if channel:
+                        chan_map[channel] = path
 
                 channel_options = ["Preview"] + sorted(chan_map.keys())
+                if "sales_preview_channel" not in st.session_state or st.session_state["sales_preview_channel"] not in channel_options:
+                    st.session_state["sales_preview_channel"] = channel_options[0] if channel_options else "Preview"
                 st.radio(
                     "View",
                     channel_options,
-                    index=channel_options.index(st.session_state.get("sales_preview_channel", "Preview"))
-                    if st.session_state.get("sales_preview_channel", "Preview") in channel_options else 0,
+                    index=channel_options.index(st.session_state.get("sales_preview_channel", "Preview")) if channel_options else 0,
                     horizontal=True,
                     key="sales_preview_channel",
                 )
@@ -991,130 +999,149 @@ def ui_sales_quick_quote():
                     key="sales_trim_channels",
                 )
 
-                preview_metadata = {
-                    "chan_map": chan_map,
-                    "jpgs": jpgs,
-                }
-            except Exception as exc:
-                st.info(f"Preview controls unavailable: {exc}")
+                selected_xml = st.session_state.get("sales_selected_xml")
+                if xml_list:
+                    xml_index = xml_list.index(selected_xml) if selected_xml in xml_list else 0
+                    selected_xml = st.selectbox(
+                        "XML (ml/m² base)",
+                        xml_list,
+                        index=xml_index,
+                        key="sales_selected_xml",
+                    )
+                    xml_bytes = read_bytes_from_zip(z, selected_xml, cache_ns="sales")
+                    preview_base_map = ml_per_m2_from_xml_bytes(xml_bytes)
+                    xml_width_hint, _, _ = get_xml_dims_m(xml_bytes)
+                    preview_display_map = convert_ml_map_for_unit(preview_base_map, UNIT, max(1e-9, float(xml_width_hint or default_width)))
+                    st.session_state["sales_preview_ml_map_m2"] = dict(preview_base_map)
+                    st.session_state["sales_preview_ml_map"] = dict(preview_display_map)
+                else:
+                    st.session_state.pop("sales_preview_ml_map_m2", None)
+                    st.session_state.pop("sales_preview_ml_map", None)
 
-        auto_base_ml_map: dict[str, float] = {}
-        auto_display_ml_map: dict[str, float] = {}
-        if z and preview_metadata:
-            try:
-                selected_channel = st.session_state.get("sales_preview_channel", "Preview")
-                prev_w = int(st.session_state.get("sales_prev_w", 520))
-                prev_h = int(st.session_state.get("sales_prev_h", 400))
-                fill_preview = bool(st.session_state.get("sales_fill_preview", True))
-                trim_channels = bool(st.session_state.get("sales_trim_channels", True))
-                chan_map = preview_metadata.get("chan_map") or {}
-                jpgs = preview_metadata.get("jpgs") or []
-                inner_path, _kind = choose_path(selected_channel, jpgs, chan_map)
                 left_prev, right_prev = st.columns([1.15, 1.0])
                 with left_prev:
-                    st.markdown("**Preview (optional ZIP)**")
-                    if inner_path:
+                    path, _kind = choose_path(st.session_state.get("sales_preview_channel", "Preview"), jpgs, chan_map)
+                    if path:
                         preview_fragment(
                             "sales_preview",
                             z,
-                            inner_path,
-                            width=prev_w,
-                            height=prev_h,
-                            fill_flag=fill_preview if selected_channel == "Preview" else False,
-                            trim_flag=trim_channels if selected_channel != "Preview" else False,
-                            max_side=int(prev_w * 1.35),
-                            caption=inner_path or "Preview",
+                            path,
+                            width=int(st.session_state.get("sales_prev_w", 520)),
+                            height=int(st.session_state.get("sales_prev_h", 400)),
+                            fill_flag=bool(st.session_state.get("sales_fill_preview", True)) if st.session_state.get("sales_preview_channel") == "Preview" else False,
+                            trim_flag=bool(st.session_state.get("sales_trim_channels", True)) if st.session_state.get("sales_preview_channel") != "Preview" else False,
+                            max_side=int(int(st.session_state.get("sales_prev_w", 520)) * 1.35),
+                            caption=path or "Preview",
                         )
                     else:
                         st.info("Preview not available in this ZIP.")
+                    if preview_display_map:
+                        unit_cons_label = consumption_unit(UNIT)
+                        total_preview = sum(float(v or 0.0) for v in preview_display_map.values())
+                        st.markdown(f"Total consumption (XML): **{total_preview:.2f} {unit_cons_label}**")
                 with right_prev:
                     st.empty()
-
-                # Build automatic consumption map from the first XML in the ZIP
-                try:
-                    _, xml_list, *_ = read_zip_listing(z, cache_ns="sales_xml_cache")
-                except Exception:
-                    xml_list = []
-                if xml_list:
-                    try:
-                        xml_bytes = read_bytes_from_zip(z, xml_list[0], cache_ns="sales_xml_first")
-                        auto_base_ml_map = ml_per_m2_from_xml_bytes(xml_bytes)
-                    except Exception:
-                        auto_base_ml_map = {}
-                auto_display_ml_map = convert_ml_map_for_unit(auto_base_ml_map, UNIT, st.session_state.get("sales_width_m", default_width_value(1.45))) if auto_base_ml_map else {}
-                st.session_state["sales_preview_ml_map_m2"] = dict(auto_base_ml_map or {})
-                st.session_state["sales_preview_ml_map"] = dict(auto_display_ml_map or {})
-                unit_cons_label = consumption_unit(UNIT)
-                if selected_channel != "Preview" and auto_display_ml_map:
-                    val = auto_display_ml_map.get(selected_channel)
-                    if val is not None:
-                        st.caption(f"**{selected_channel}**: {val:.2f} {unit_cons_label}")
-                if auto_display_ml_map:
-                    total_disp = sum(float(v or 0.0) for v in auto_display_ml_map.values())
-                    st.markdown(f"Total consumption: **{total_disp:.2f} {unit_cons_label}**")
             except Exception as exc:
                 st.info(f"Preview unavailable: {exc}")
+        else:
+            st.session_state.pop("sales_preview_ml_map_m2", None)
+            st.session_state.pop("sales_preview_ml_map", None)
 
-        st.markdown("---")
-        with st_div("ink-fixed-grid"):
-            s1a, s1b, s1c = st.columns(3)
-            with s1a:
-                st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
-            with s1b:
-                st.markdown('<div class="ink-row-spacer"></div>', unsafe_allow_html=True)
-            cons_unit = s1c.radio("Consumption unit", ["ml/m²", "ml/m"], index=0, horizontal=True, key="sales_cons_unit")
+        manual_state = st.session_state.setdefault("sales_manual_inputs", {"Color": 6.0, "White": 0.0, "FOF": 0.0})
+        source_options = ["Manual"]
+        if preview_base_map:
+            source_options.insert(0, "XML (exact)")
+        cons_source = st.radio("Consumption source", source_options, horizontal=True, key="sales_source_mode")
+        use_xml = cons_source.startswith("XML") and bool(preview_base_map)
 
-        auto_inputs_disabled = bool(auto_base_ml_map)
+        cons_label = consumption_unit(UNIT)
         with st_div("ink-fixed-grid"):
             s2a, s2b = st.columns(2)
-            width_m = s2a.number_input("Usable width (m)", min_value=0.0, value=default_width_value(1.45), step=0.01, key="sales_width_m")
-            color_default = float(auto_display_ml_map.get("Color", st.session_state.get("sales_c", 6.0)))
-            c = s2b.number_input(
-                f"Color ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
+            width_m = s2a.number_input(
+                "Usable width (m)",
                 min_value=0.0,
-                value=color_default,
-                step=0.1,
-                key="sales_c",
-                disabled=auto_inputs_disabled,
+                value=float(st.session_state.get("sales_width_m", xml_width_hint or default_width)),
+                step=0.01,
+                key="sales_width_m",
             )
+            width_safe = max(1e-9, float(width_m or (xml_width_hint or default_width)))
+            xml_display_map = convert_ml_map_for_unit(preview_base_map, UNIT, width_safe) if use_xml else {}
+            if use_xml:
+                s2b.number_input(
+                    f"Color ({cons_label})",
+                    value=float(xml_display_map.get("Color", 0.0)),
+                    step=0.0,
+                    disabled=True,
+                    key="sales_color_display",
+                )
+            else:
+                color_val = s2b.number_input(
+                    f"Color ({cons_label})",
+                    min_value=0.0,
+                    value=float(manual_state.get("Color", 6.0)),
+                    step=0.1,
+                    key="sales_manual_color",
+                )
+                manual_state["Color"] = float(color_val)
 
             s3a, s3b = st.columns(2)
-            white_default = float(auto_display_ml_map.get("White", st.session_state.get("sales_w", 0.0)))
             length_m = s3a.number_input("Length (m)", min_value=0.0, value=1.00, step=0.01, key="sales_length_m")
-            w = s3b.number_input(
-                f"White ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
-                min_value=0.0,
-                value=white_default,
-                step=0.1,
-                key="sales_w",
-                disabled=auto_inputs_disabled,
-            )
+            if use_xml:
+                s3b.number_input(
+                    f"White ({cons_label})",
+                    value=float(xml_display_map.get("White", 0.0)),
+                    step=0.0,
+                    disabled=True,
+                    key="sales_white_display",
+                )
+            else:
+                white_val = s3b.number_input(
+                    f"White ({cons_label})",
+                    min_value=0.0,
+                    value=float(manual_state.get("White", 0.0)),
+                    step=0.1,
+                    key="sales_manual_white",
+                )
+                manual_state["White"] = float(white_val)
 
             s4a, s4b = st.columns(2)
             waste = s4a.number_input("Waste (%)", min_value=0.0, value=2.0, step=0.5, key="sales_waste")
-            fof_default = float(auto_display_ml_map.get("FOF", st.session_state.get("sales_f", 0.0)))
-            f = s4b.number_input(
-                f"FOF ({consumption_unit(UNIT) if auto_inputs_disabled else cons_unit})",
-                min_value=0.0,
-                value=fof_default,
-                step=0.1,
-                key="sales_f",
-                disabled=auto_inputs_disabled,
-            )
+            if use_xml:
+                s4b.number_input(
+                    f"FOF ({cons_label})",
+                    value=float(xml_display_map.get("FOF", 0.0)),
+                    step=0.0,
+                    disabled=True,
+                    key="sales_fof_display",
+                )
+            else:
+                fof_val = s4b.number_input(
+                    f"FOF ({cons_label})",
+                    min_value=0.0,
+                    value=float(manual_state.get("FOF", 0.0)),
+                    step=0.1,
+                    key="sales_manual_fof",
+                )
+                manual_state["FOF"] = float(fof_val)
 
-        if auto_base_ml_map:
-            ml_map_m2 = dict(auto_base_ml_map)
-        elif cons_unit == "ml/m":
-            w_safe = max(1e-9, float(width_m or 0.0))
-            ml_map_m2 = {"Color": c / w_safe, "White": w / w_safe, "FOF": f / w_safe}
+        if use_xml:
+            ml_map_m2 = dict(preview_base_map or {})
+            display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_safe)
         else:
-            ml_map_m2 = {"Color": c, "White": w, "FOF": f}
-        display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_m)
-        if auto_inputs_disabled:
-            st.session_state["sales_preview_ml_map"] = dict(display_ml_map or {})
-            st.session_state["sales_preview_ml_map_m2"] = dict(ml_map_m2 or {})
-
-        st.markdown("---")
+            color_val = float(manual_state.get("Color", 0.0))
+            white_val = float(manual_state.get("White", 0.0))
+            fof_val = float(manual_state.get("FOF", 0.0))
+            if UNIT == "m2":
+                ml_map_m2 = {"Color": color_val, "White": white_val, "FOF": fof_val}
+            else:
+                ml_map_m2 = {
+                    "Color": color_val / width_safe,
+                    "White": white_val / width_safe,
+                    "FOF": fof_val / width_safe,
+                }
+            display_ml_map = convert_ml_map_for_unit(ml_map_m2, UNIT, width_safe)
+            st.session_state["sales_preview_ml_map_m2"] = dict(ml_map_m2)
+            st.session_state["sales_preview_ml_map"] = dict(display_ml_map)
 
         section("Costs & currency", "Applies to this quote.")
         with st_div("ink-fixed-grid"):
@@ -1125,24 +1152,24 @@ def ui_sales_quick_quote():
             fabric = cc4.number_input(f"Substrate ({per_unit(UNIT)})", min_value=0.0, value=float(st.session_state.get("sales_fabric", DEFAULTS["fabric_per_unit"])), step=0.10, key="sales_fabric")
 
         cur1, cur2, cur3 = st.columns(3)
-        SYM  = cur1.text_input("Local currency symbol", value=st.session_state.get("sales_local_sym", DEFAULTS["local_symbol"]))
-        FX   = cur2.number_input("USD → Local (FX)", min_value=0.0, value=float(st.session_state.get("sales_fx", DEFAULTS["usd_to_local"])), step=0.01)
+        SYM = cur1.text_input("Local currency symbol", value=st.session_state.get("sales_local_sym", DEFAULTS["local_symbol"]))
+        FX = cur2.number_input("USD → Local (FX)", min_value=0.0, value=float(st.session_state.get("sales_fx", DEFAULTS["usd_to_local"])), step=0.01)
         OUTC = cur3.radio("Output currency", ["USD", "Local"], index=1, horizontal=True, key="sales_curr_out")
 
         st.markdown("---")
         section("Pricing", "Direct per unit or monthly helper.")
+        total_fix_m = 0.0
         fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0, horizontal=True, key="sales_fix_mode")
         if fix_mode.startswith("Direct"):
             with st_div("ink-fixed-grid"):
                 mv1, mv2, mv3, mv4, mv5 = st.columns(5)
-                fixed_unit = mv1.number_input(f"Fixed allocation (/"+unit_lbl+")", min_value=0.0, value=0.0, step=0.05, key="sales_fixed_unit")
-                price_in   = mv2.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
-                margin     = mv3.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
-                taxes      = mv4.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
-                terms      = mv5.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
-                rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
+                fixed_unit = mv1.number_input(f"Fixed allocation (/{unit_lbl})", min_value=0.0, value=0.0, step=0.05, key="sales_fixed_unit")
+                price_in = mv2.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
+                margin = mv3.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
+                taxes = mv4.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
+                terms = mv5.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
+                rnd = float(st.selectbox("Round to", ["0.01", "0.05", "0.10"], index=1, key="sales_round"))
             fixed_per_unit_used = fixed_unit
-            total_fix_m = 0.0
             st.caption(f"Fixed allocation in use: {fixed_per_unit_used:.2f} {per_unit(UNIT)}")
         else:
             st.caption("Monthly fixed costs — labor, leasing, depreciation, overheads and other items.")
@@ -1153,39 +1180,45 @@ def ui_sales_quick_quote():
                 dp = fx3.number_input("Depreciation (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_depr_m")
                 oh = fx4.number_input("Overheads (monthly)", min_value=0.0, value=0.0, step=10.0, key="sales_fix_over_m")
             st.caption("Other fixed (monthly)")
-            _fix_input = ensure_df(st.session_state.get("sales_fix_others", [{"Name":"—","Value":0.0}]), ["Name","Value"])
+            _fix_input = ensure_df(st.session_state.get("sales_fix_others", [{"Name": "—", "Value": 0.0}]), ["Name", "Value"])
             df_fix = st.data_editor(_fix_input, num_rows="dynamic", use_container_width=True, key="sales_fix_others_editor")
-            sum_others = ensure_df(df_fix, ["Name","Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum()
+            sum_others = ensure_df(df_fix, ["Name", "Value"]).get("Value", pd.Series(dtype=float)).fillna(0).sum()
             prod_m = monthly_production_inputs(UNIT, unit_lbl, state_prefix="sales_fix")
-            total_fix_m = fl+le+dp+oh+sum_others
-            fixed_per_unit_used = (total_fix_m/prod_m) if prod_m>0 else 0.0
+            total_fix_m = fl + le + dp + oh + sum_others
+            fixed_per_unit_used = (total_fix_m / prod_m) if prod_m > 0 else 0.0
             with st_div("ink-fixed-grid"):
-                price_in   = st.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
-                margin     = st.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
-                taxes      = st.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
-                terms      = st.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
-                rnd        = float(st.selectbox("Round to", ["0.01","0.05","0.10"], index=1, key="sales_round"))
-            st.caption(f"Monthly fixed total: {total_fix_m:.2f}; production: {prod_m:,.0f} {unit_lbl}/month ⇒ allocation: {fixed_per_unit_used:.4f} {per_unit(UNIT)}")
+                price_in = st.number_input(f"Price {per_unit(UNIT)}", min_value=0.0, value=0.0, step=0.10, key="sales_price_in")
+                margin = st.number_input("Target margin (%)", min_value=0.0, value=20.0, step=0.5, key="sales_margin")
+                taxes = st.number_input("Taxes (%)", min_value=0.0, value=10.0, step=0.5, key="sales_taxes")
+                terms = st.number_input("Fees/Terms (%)", min_value=0.0, value=2.10, step=0.05, key="sales_terms")
+                rnd = float(st.selectbox("Round to", ["0.01", "0.05", "0.10"], index=1, key="sales_round"))
+            st.caption(f"Monthly fixed total: {total_fix_m:,.2f}; production: {prod_m:,.0f} {unit_lbl}/month ⇒ allocation: {fixed_per_unit_used:.4f} {per_unit(UNIT)}")
 
     if do_compute:
-        # Simulate — use a safe default speed for quick quotes
         res = simulate(
-            UNIT, float(width_m), float(length_m), float(waste),
+            UNIT,
+            float(st.session_state.get("sales_width_m", default_width)),
+            float(st.session_state.get("sales_length_m", 1.0)),
+            float(st.session_state.get("sales_waste", 0.0)),
             PRINT_MODES["Standard Quality"]["speed"],
             ml_map_m2,
-            ink_c, ink_w, ink_f,
-            fabric, 0.0, 0.0,
+            ink_c,
+            ink_w,
+            ink_f,
+            fabric,
+            0.0,
+            0.0,
             fixed_per_unit_used,
             show_time_metrics=False,
         )
 
         qty = max(1e-9, float(res.get("qty_units", 0.0)))
         total_cost = float(res.get("total_cost", 0.0))
-        total_per_unit = total_cost/qty
-        suggested = price_round(total_per_unit*(1 + margin/100 + taxes/100), rnd)
-        suggested = price_round(suggested*(1+terms/100), rnd)
-        effective_price = price_in if price_in>0 else suggested
-        rows_tot, rows_unit = build_cost_rows_from_sim(res, unit_lbl, SYM if OUTC=="Local" else "US$", FX if OUTC=="Local" else 1.0, price=effective_price)
+        total_per_unit = total_cost / qty
+        suggested = price_round(total_per_unit * (1 + margin / 100 + taxes / 100), rnd)
+        suggested = price_round(suggested * (1 + terms / 100), rnd)
+        effective_price = price_in if price_in > 0 else suggested
+        rows_tot, rows_unit = build_cost_rows_from_sim(res, unit_lbl, SYM if OUTC == "Local" else "US$", FX if OUTC == "Local" else 1.0, price=effective_price)
 
         st.markdown("---")
         st.subheader("Quote result")
@@ -1196,10 +1229,9 @@ def ui_sales_quick_quote():
             render_info_table(f"Per unit (/{unit_lbl})", rows_unit)
         render_help_glossary()
 
-        # Break-even chart (optional)
-        ink_total   = float(res.get("cost_ink", 0.0))
+        ink_total = float(res.get("cost_ink", 0.0))
         fabric_cost = fabric_total(res)
-        other_var   = float(res.get("cost_other", 0.0))
+        other_var = float(res.get("cost_other", 0.0))
         variable_total = ink_total + fabric_cost + other_var
         variable_per_unit = variable_total / qty
         fixed_month_total = float(total_fix_m) if fix_mode.startswith("Monthly") else 0.0
@@ -1208,47 +1240,47 @@ def ui_sales_quick_quote():
             variable_u=variable_per_unit,
             fixed_month=fixed_month_total,
             unit_lbl=unit_lbl,
-            sym=(SYM if OUTC=="Local" else "US$"),
-            fx=(FX if OUTC=="Local" else 1.0),
+            sym=(SYM if OUTC == "Local" else "US$"),
+            fx=(FX if OUTC == "Local" else 1.0),
             title="Break-even — Quick quote",
         )
         st.plotly_chart(fig_be, use_container_width=True, key="sales_be_chart", config=plotly_cfg())
         try:
-            sym_out = (SYM if OUTC=="Local" else "US$")
-            fx_out  = (FX if OUTC=="Local" else 1.0)
+            sym_out = SYM if OUTC == "Local" else "US$"
+            fx_out = FX if OUTC == "Local" else 1.0
             render_break_even_insights(effective_price, variable_per_unit, fixed_month_total, unit_lbl, sym_out, fx_out, label="Quote")
         except Exception:
             pass
 
-        # Optional cost charts (per unit)
         st.markdown("---")
         show_charts = st.checkbox("Show cost charts", value=True, key="sales_show_cost_charts")
         if show_charts:
-            fxv = FX if OUTC=="Local" else 1.0
-            # Per-unit contributions
+            fxv = FX if OUTC == "Local" else 1.0
             color_ml_u = float(display_ml_map.get("Color", 0.0))
             white_ml_u = float(display_ml_map.get("White", 0.0))
-            fof_ml_u   = float(display_ml_map.get("FOF",   0.0))
-            color_u = (color_ml_u/1000.0) * float(ink_c or 0.0)
-            white_u = (white_ml_u/1000.0) * float(ink_w or 0.0)
-            fof_u   = (fof_ml_u  /1000.0) * float(ink_f or 0.0)
+            fof_ml_u = float(display_ml_map.get("FOF", 0.0))
+            color_u = (color_ml_u / 1000.0) * float(ink_c or 0.0)
+            white_u = (white_ml_u / 1000.0) * float(ink_w or 0.0)
+            fof_u = (fof_ml_u / 1000.0) * float(ink_f or 0.0)
             fabric_u = float(fabric or 0.0)
-            fixed_u  = float(fixed_per_unit_used or 0.0)
+            fixed_u = float(fixed_per_unit_used or 0.0)
 
-            # Chart 1 — Variable vs Fixed (per unit)
             fig_vf = go.Figure()
-            fig_vf.add_trace(go.Bar(name="Variable", x=["Per unit"], y=[(color_u+white_u+fof_u+fabric_u)*fxv], marker_color="#3b82f6"))
-            fig_vf.add_trace(go.Bar(name="Fixed", x=["Per unit"], y=[fixed_u*fxv], marker_color="#9ca3af"))
-            fig_vf.update_layout(barmode="stack", template="plotly_white", height=320, margin=dict(l=10,r=10,t=30,b=10), yaxis_title=f"{SYM if OUTC=='Local' else 'US$'} / {unit_lbl}")
+            fig_vf.add_trace(go.Bar(name="Variable", x=["Per unit"], y=[(color_u + white_u + fof_u + fabric_u) * fxv], marker_color="#3b82f6"))
+            fig_vf.add_trace(go.Bar(name="Fixed", x=["Per unit"], y=[fixed_u * fxv], marker_color="#9ca3af"))
+            fig_vf.update_layout(barmode="stack", template="plotly_white", height=320, margin=dict(l=10, r=10, t=30, b=10), yaxis_title=f"{SYM if OUTC == 'Local' else 'US$'} / {unit_lbl}")
 
-            # Chart 2 — Variable breakdown (per unit)
             fig_var = go.Figure()
-            fig_var.add_trace(go.Bar(x=["Color ink","White ink","FOF / Pretreat","Fabric"], y=[color_u*fxv, white_u*fxv, fof_u*fxv, fabric_u*fxv], marker_color=["#2563eb","#6b7280","#7e57c2","#10b981"]))
-            fig_var.update_layout(template="plotly_white", height=320, margin=dict(l=10,r=10,t=30,b=10), yaxis_title=f"{SYM if OUTC=='Local' else 'US$'} / {unit_lbl}")
+            fig_var.add_trace(go.Bar(x=["Color ink", "White ink", "FOF / Pretreat", "Fabric"], y=[color_u * fxv, white_u * fxv, fof_u * fxv, fabric_u * fxv], marker_color=["#2563eb", "#6b7280", "#7e57c2", "#10b981"]))
+            fig_var.update_layout(template="plotly_white", height=320, margin=dict(l=10, r=10, t=30, b=10), yaxis_title=f"{SYM if OUTC == 'Local' else 'US$'} / {unit_lbl}")
 
             cc1, cc2 = st.columns(2)
-            with cc1: st.subheader("Variable × Fixed (per unit)"); st.plotly_chart(fig_vf, use_container_width=True, key="sales_vf_chart", config=plotly_cfg())
-            with cc2: st.subheader("Variable breakdown (per unit)"); st.plotly_chart(fig_var, use_container_width=True, key="sales_var_chart", config=plotly_cfg())
+            with cc1:
+                st.subheader("Variable × Fixed (per unit)")
+                st.plotly_chart(fig_vf, use_container_width=True, key="sales_vf_chart", config=plotly_cfg())
+            with cc2:
+                st.subheader("Variable breakdown (per unit)")
+                st.plotly_chart(fig_var, use_container_width=True, key="sales_var_chart", config=plotly_cfg())
     else:
         st.info("Adjust the quote inputs and click Apply to calculate.")
 
@@ -3896,18 +3928,19 @@ def insights_for_compare(all_channels: List[str], yA: List[float], yB: List[floa
 # ====== Cabeçalho simples
 def render_header():
     """Compact header with a small image to the left of the title."""
-    img = _load_asset_image("header_banner") or _load_asset_image("app_logo") or _load_asset_image("page_icon")
-    # Allow overrides from session state
+    partner_logo = _load_asset_image("header_banner")
+    company_logo = _load_asset_image("app_logo") or _load_asset_image("page_icon")
     app_title = st.session_state.get("app_title", DEFAULT_APP_TITLE)
     app_sub = st.session_state.get("app_subtitle", DEFAULT_APP_SUBTITLE)
-    if img is None:
-        st.markdown(f"<h1 style='margin:0 0 6px 0;'>{app_title}</h1>", unsafe_allow_html=True)
-        st.caption(app_sub)
-        return
-    left, right = st.columns([1, 18])
-    with left:
-        st.image(img, width=56, caption=None)
-    with right:
+
+    col_partner, col_company, col_text = st.columns([1, 1, 16])
+    with col_partner:
+        if partner_logo is not None:
+            st.image(partner_logo, width=60, caption=None)
+    with col_company:
+        if company_logo is not None:
+            st.image(company_logo, width=60, caption=None)
+    with col_text:
         st.markdown(f"<h1 style='margin: 0 0 2px 0;'>{app_title}</h1>", unsafe_allow_html=True)
         st.caption(app_sub)
 
