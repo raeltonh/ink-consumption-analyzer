@@ -1063,6 +1063,7 @@ def ui_sales_quick_quote():
                 st.info(f"Preview unavailable: {exc}")
 
         st.markdown("---")
+
         section("Costs & currency", "Applies to this quote.")
         with st_div("ink-fixed-grid"):
             cc1, cc2, cc3, cc4 = st.columns(4)
@@ -3707,8 +3708,16 @@ def choose_path(channel, jpgs, chan_map):
         if jpgs:
             cand = [p for p in jpgs if re.search(r"preview", p, re.I)]
             return (cand[0] if cand else jpgs[0]), "jpg"
+        if chan_map:
+            first_path = next(iter(chan_map.values()))
+            return first_path, "tif"
         return None, None
-    if channel in chan_map: return chan_map[channel], "tif"
+    if channel in chan_map:
+        return chan_map[channel], "tif"
+    if jpgs:
+        return jpgs[0], "jpg"
+    if chan_map:
+        return next(iter(chan_map.values())), "tif"
     return None, None
 
 def _slug(s: str) -> str:
