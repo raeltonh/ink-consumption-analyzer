@@ -21,7 +21,7 @@ import unicodedata
 def _deaccent(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
 
-import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib
+import io, re, math, zipfile, warnings, datetime as dt, textwrap, hashlib, calendar
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Tuple, List, TYPE_CHECKING
 
@@ -555,6 +555,13 @@ DEFAULTS = {
     # moeda
     "local_symbol": "R$",
     "usd_to_local": 5.57,
+    # payback defaults
+    "payback_machine_investment": 150000.0,
+    "payback_residual_value": 0.0,
+    "payback_ramp_months": 3,
+    "payback_ramp_start_pct": 40.0,
+    "payback_growth_pct": 0.0,
+    "payback_horizon_months": 36,
 }
 
 # Modos de impressão (velocidade em m²/h; m/h ≈ m²/h ÷ largura)
@@ -919,6 +926,310 @@ def render_break_even_insights(price_u: float, variable_u: float, fixed_month: f
         pass
 
 
+def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    """Return value clipped between low/high (robust to non-numeric inputs)."""
+    try:
+        return max(low, min(high, float(value)))
+    except Exception:
+        return low
+
+
+def _add_months(base: dt.date, months: int) -> dt.date:
+    """Add calendar months to a date without external dependencies."""
+    months = int(months or 0)
+    month = base.month - 1 + months
+    year = base.year + month // 12
+    month = month % 12 + 1
+    day = min(base.day, calendar.monthrange(year, month)[1])
+    return dt.date(year, month, day)
+
+
+def compute_payback_schedule(
+    initial_investment: float,
+    steady_cash: float,
+    horizon_months: int,
+    ramp_months: int,
+    ramp_start_ratio: float,
+    growth_rate: float,
+) -> tuple[int | None, List[Dict[str, float]], float]:
+    """
+    Build a monthly payback schedule with optional ramp-up and post-ramp growth.
+    Returns (payback_month, schedule_rows, final_cumulative).
+    Each row contains: month, cash, cumulative, utilization_pct, growth_multiplier.
+    """
+    inv = float(initial_investment or 0.0)
+    steady = float(steady_cash or 0.0)
+    horizon = max(1, int(horizon_months or 0))
+    ramp_m = max(0, int(ramp_months or 0))
+    ramp_start = _clamp(ramp_start_ratio, 0.0, 1.0)
+    growth = float(growth_rate or 0.0)
+    if growth <= -0.99:
+        growth = -0.99  # avoid negative explosion
+
+    cumulative = -inv
+    payback_month: int | None = None
+    schedule: List[Dict[str, float]] = []
+
+    if horizon <= 0:
+        return payback_month, schedule, cumulative
+
+    for month in range(1, horizon + 1):
+        if ramp_m <= 1:
+            ramp_factor = 1.0 if ramp_m == 0 else 1.0
+        elif month <= ramp_m:
+            progress = (month - 1) / max(ramp_m - 1, 1)
+            ramp_factor = _clamp(ramp_start + (1.0 - ramp_start) * progress, 0.0, 1.0)
+        else:
+            ramp_factor = 1.0
+
+        periods_after_ramp = 0
+        if ramp_m == 0:
+            periods_after_ramp = max(0, month - 1)
+        else:
+            periods_after_ramp = max(0, month - ramp_m)
+        growth_multiplier = (1.0 + growth) ** periods_after_ramp if growth != 0 else 1.0
+
+        cash = steady * ramp_factor * growth_multiplier
+        cumulative += cash
+
+        schedule.append(
+            {
+                "month": float(month),
+                "cash": float(cash),
+                "cumulative": float(cumulative),
+                "utilization_pct": float(ramp_factor * 100.0),
+                "growth_multiplier": float(growth_multiplier),
+            }
+        )
+        if payback_month is None and cumulative >= 0:
+            payback_month = month
+
+    return payback_month, schedule, cumulative
+
+
+def render_payback_block(
+    workflow_key: str,
+    label: str,
+    *,
+    price_per_unit: float,
+    variable_per_unit: float,
+    fixed_per_unit: float,
+    default_monthly_units: float,
+    default_fixed_month: float,
+    default_depreciation_month: float,
+    sym: str,
+    fx: float,
+    unit_lbl: str,
+):
+    """
+    Shared UI block to project machine payback for a workflow (Single or Sales).
+    Uses USD for internal math; displays in chosen currency via sym/fx.
+    """
+    section(
+        f"Machine payback — {label}",
+        "Project when the machine investment is recovered with current unit economics.",
+    )
+
+    steady_default_units = float(default_monthly_units or DEFAULTS.get("prod_month_units", 30800.0))
+    steady_default_fixed = float(default_fixed_month or (fixed_per_unit or 0.0) * steady_default_units)
+    steady_default_depr = float(default_depreciation_month or 0.0)
+
+    econ_col, invest_col = st.columns([1.45, 1.0])
+    with econ_col:
+        st.markdown("**Unit economics**")
+        price_input = st.number_input(
+            f"Price {per_unit(get_unit())}",
+            min_value=0.0,
+            value=float(price_per_unit or 0.0),
+            step=0.10,
+            key=f"{workflow_key}_payback_price",
+        )
+        variable_input = st.number_input(
+            f"Variable cost {per_unit(get_unit())}",
+            min_value=0.0,
+            value=float(variable_per_unit or 0.0),
+            step=0.10,
+            key=f"{workflow_key}_payback_variable",
+        )
+        monthly_units_input = st.number_input(
+            f"Monthly volume ({unit_lbl}/month)",
+            min_value=0.0,
+            value=float(steady_default_units),
+            step=max(10.0, steady_default_units * 0.05),
+            key=f"{workflow_key}_payback_volume",
+        )
+        fixed_month_input = st.number_input(
+            "Monthly fixed (USD)",
+            min_value=0.0,
+            value=float(steady_default_fixed),
+            step=50.0,
+            key=f"{workflow_key}_payback_fixed_month",
+        )
+        depreciation_input = st.number_input(
+            "Monthly depreciation (USD)",
+            min_value=0.0,
+            value=float(min(steady_default_depr, steady_default_fixed)),
+            step=25.0,
+            key=f"{workflow_key}_payback_depr_month",
+            help="Excluded from cash flow to avoid double counting the machine investment.",
+        )
+        st.caption("Depreciation is removed from fixed costs so the machine cost is only counted once.")
+
+    with invest_col:
+        st.markdown("**Investment & ramp**")
+        machine_investment = st.number_input(
+            "Machine investment (USD)",
+            min_value=0.0,
+            value=float(st.session_state.get(f"{workflow_key}_payback_investment", DEFAULTS.get("payback_machine_investment", 150000.0))),
+            step=5000.0,
+            key=f"{workflow_key}_payback_investment",
+        )
+        residual_value = st.number_input(
+            "Residual value (USD)",
+            min_value=0.0,
+            value=float(st.session_state.get(f"{workflow_key}_payback_residual", DEFAULTS.get("payback_residual_value", 0.0))),
+            step=1000.0,
+            key=f"{workflow_key}_payback_residual",
+        )
+        ramp_months = st.slider(
+            "Ramp-up months",
+            0,
+            24,
+            value=int(st.session_state.get(f"{workflow_key}_payback_ramp_months", DEFAULTS.get("payback_ramp_months", 3))),
+            key=f"{workflow_key}_payback_ramp_months",
+        )
+        ramp_start_pct = st.slider(
+            "Ramp start (%)",
+            0,
+            100,
+            value=int(st.session_state.get(f"{workflow_key}_payback_ramp_start", DEFAULTS.get("payback_ramp_start_pct", 40.0))),
+            key=f"{workflow_key}_payback_ramp_start",
+            help="Expected utilisation in month 1 (scales linearly until full volume at the end of ramp).",
+        )
+        growth_pct = st.number_input(
+            "Monthly growth after ramp (%)",
+            min_value=-50.0,
+            max_value=200.0,
+            value=float(st.session_state.get(f"{workflow_key}_payback_growth", DEFAULTS.get("payback_growth_pct", 0.0))),
+            step=0.5,
+            key=f"{workflow_key}_payback_growth",
+        )
+        horizon_months = st.slider(
+            "Analysis horizon (months)",
+            6,
+            120,
+            value=int(st.session_state.get(f"{workflow_key}_payback_horizon", DEFAULTS.get("payback_horizon_months", 36))),
+            key=f"{workflow_key}_payback_horizon",
+        )
+
+    if monthly_units_input <= 0:
+        st.warning("Enter a positive monthly volume to simulate payback.")
+        return
+    if price_input <= variable_input:
+        st.warning("Price per unit must be greater than variable cost to generate contribution margin.")
+        return
+
+    contribution_unit = price_input - variable_input
+    fixed_after_depr = max(0.0, fixed_month_input - depreciation_input)
+    steady_cash = contribution_unit * monthly_units_input - fixed_after_depr
+    net_investment = max(0.0, machine_investment - residual_value)
+
+    if steady_cash <= 0:
+        st.error("Monthly net cash is ≤ 0. Adjust price, costs or volume before projecting payback.")
+        return
+    if net_investment <= 0:
+        st.warning("Net investment is zero or negative — payback is immediate under current assumptions.")
+
+    ramp_ratio = _clamp((ramp_start_pct or 0.0) / 100.0, 0.0, 1.0)
+    growth_rate = float(growth_pct or 0.0) / 100.0
+
+    payback_month, schedule, final_cumulative = compute_payback_schedule(
+        net_investment,
+        steady_cash,
+        horizon_months,
+        ramp_months,
+        ramp_ratio,
+        growth_rate,
+    )
+
+    payback_date = _add_months(dt.date.today(), payback_month) if payback_month else None
+
+    metrics = st.columns(3)
+    metrics[0].metric("Contribution per unit", pretty_money(contribution_unit, sym, fx))
+    metrics[1].metric("Steady monthly net cash", pretty_money(steady_cash, sym, fx))
+    if payback_month:
+        metrics[2].metric("Payback (months)", f"{payback_month}")
+        metrics[2].markdown(
+            f"<small>≈ {payback_date:%b %Y}</small>" if payback_date else "<small>In horizon</small>",
+            unsafe_allow_html=True,
+        )
+    else:
+        metrics[2].metric("Payback (months)", "Not reached")
+        metrics[2].markdown(
+            f"<small>Net @ horizon: {pretty_money(final_cumulative, sym, fx)}</small>",
+            unsafe_allow_html=True,
+        )
+
+    cum_x = [0] + [int(row["month"]) for row in schedule]
+    cum_y = [-net_investment] + [row["cumulative"] for row in schedule]
+    fx_val = fx or 1.0
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=cum_x,
+            y=[val * fx_val for val in cum_y],
+            mode="lines+markers",
+            name="Cumulative cash",
+            line=dict(color="#2563eb", width=3),
+            fill="tozeroy",
+        )
+    )
+    if schedule:
+        fig.add_trace(
+            go.Bar(
+                x=[int(row["month"]) for row in schedule],
+                y=[row["cash"] * fx_val for row in schedule],
+                name="Monthly cash",
+                marker_color="#94a3b8",
+                opacity=0.6,
+            )
+        )
+    fig.add_hline(y=0, line_dash="dash", line_color="#9ca3af")
+    if payback_month:
+        fig.add_vline(
+            x=payback_month,
+            line_dash="dot",
+            line_color="#2563eb",
+            annotation_text=f"Payback M{payback_month}",
+            annotation_position="top right",
+        )
+    fig.update_layout(
+        template="plotly_white",
+        height=360,
+        margin=dict(l=10, r=10, t=50, b=10),
+        xaxis_title="Month",
+        yaxis_title=f"{sym}",
+        legend_title=None,
+    )
+    st.plotly_chart(fig, use_container_width=True, config=plotly_cfg(), key=f"{workflow_key}_payback_chart")
+
+    with st.expander("Show monthly schedule", expanded=False):
+        if not schedule:
+            st.info("Adjusted assumptions to see the payback schedule.")
+        else:
+            tbl = pd.DataFrame(schedule)
+            base_cash = steady_cash if abs(steady_cash) > 1e-9 else 1.0
+            tbl["Month"] = tbl["month"].astype(int)
+            tbl["Equivalent volume (%)"] = (tbl["cash"] / base_cash * 100.0).clip(lower=-999.0, upper=999.0).round(1)
+            tbl["Monthly cash"] = tbl["cash"].apply(lambda v: pretty_money(v, sym, fx))
+            tbl["Cumulative"] = tbl["cumulative"].apply(lambda v: pretty_money(v, sym, fx))
+            st.dataframe(
+                tbl[["Month", "Equivalent volume (%)", "Monthly cash", "Cumulative"]],
+                use_container_width=True,
+            )
+
+
 # =========================
 # Sales — Quick quote (manual consumption)
 # =========================
@@ -1159,6 +1470,8 @@ def ui_sales_quick_quote():
         st.markdown("---")
         section("Pricing", "Direct per unit or monthly helper.")
         total_fix_m = 0.0
+        prod_m = float(st.session_state.get("sales_fix_prod_month_units", DEFAULTS.get("prod_month_units", 30800.0)))
+        dp = float(st.session_state.get("sales_fix_depr_m", 0.0))
         fix_mode = st.radio("Fixed costs mode", ["Direct per unit", "Monthly helper"], index=0, horizontal=True, key="sales_fix_mode")
         if fix_mode.startswith("Direct"):
             with st_div("ink-fixed-grid"):
@@ -1251,6 +1564,33 @@ def ui_sales_quick_quote():
             render_break_even_insights(effective_price, variable_per_unit, fixed_month_total, unit_lbl, sym_out, fx_out, label="Quote")
         except Exception:
             pass
+
+        pay_sym = SYM if OUTC == "Local" else "US$"
+        pay_fx = FX if OUTC == "Local" else 1.0
+        if fix_mode.startswith("Monthly"):
+            monthly_units_pay = float(prod_m or 0.0)
+            fixed_month_pay = float(total_fix_m or 0.0)
+            depreciation_pay = float(dp or 0.0)
+        else:
+            monthly_units_pay = float(st.session_state.get("sales_fix_prod_month_units", DEFAULTS.get("prod_month_units", 30800.0)))
+            if monthly_units_pay <= 0:
+                monthly_units_pay = DEFAULTS.get("prod_month_units", 30800.0)
+            fixed_month_pay = float(fixed_per_unit_used or 0.0) * monthly_units_pay
+            depreciation_pay = 0.0
+
+        render_payback_block(
+            "sales",
+            "Sales workflow",
+            price_per_unit=float(effective_price),
+            variable_per_unit=float(variable_per_unit),
+            fixed_per_unit=float(fixed_per_unit_used or 0.0),
+            default_monthly_units=monthly_units_pay,
+            default_fixed_month=fixed_month_pay,
+            default_depreciation_month=depreciation_pay,
+            sym=pay_sym,
+            fx=pay_fx,
+            unit_lbl=unit_lbl,
+        )
 
         st.markdown("---")
         show_charts = st.checkbox("Show cost charts", value=True, key="sales_show_cost_charts")
@@ -4733,6 +5073,58 @@ def ui_single():
             st.info("Click **Calculate** to generate the break-even inputs.")
     except Exception as _e:
         st.info(f"Break-even unavailable: {_e}")
+    if P and P.get("be"):
+        currency_out_pay = st.session_state.get("single_curr_out", "Local")
+        if currency_out_pay == "USD":
+            pay_fx, pay_sym = 1.0, "US$"
+        else:
+            pay_fx = float(st.session_state.get("single_fx", DEFAULTS.get("usd_to_local", 5.57)))
+            pay_sym = st.session_state.get("single_local_sym", DEFAULTS.get("local_symbol", "R$"))
+
+        unit_lbl_pay = P.get("unit_lbl", unit_label_short(get_unit()))
+        fixed_per_unit_pay = float(P["be"].get("fixed_per_unit", 0.0))
+
+        fix_mode_val = str(st.session_state.get("single_fix_mode", "Direct per unit")).lower()
+        if fix_mode_val.startswith("monthly"):
+            sum_others_pay = 0.0
+            if st.session_state.get("single_fix_others"):
+                sum_others_pay = ensure_df(
+                    st.session_state.get("single_fix_others", []),
+                    ["Name", "Value"],
+                )["Value"].fillna(0).sum()
+            monthly_units_pay = float(
+                st.session_state.get("single_fix_prod_month_units", DEFAULTS.get("prod_month_units", 30800.0))
+            )
+            fixed_month_pay = (
+                float(st.session_state.get("single_fix_labor_month", 0.0))
+                + float(st.session_state.get("single_fix_leasing_month", 0.0))
+                + float(st.session_state.get("single_fix_depr_month", 0.0))
+                + float(st.session_state.get("single_fix_over_month", 0.0))
+                + float(sum_others_pay)
+            )
+            depreciation_month_pay = float(st.session_state.get("single_fix_depr_month", 0.0))
+        else:
+            monthly_units_pay = float(
+                st.session_state.get("single_fix_prod_month_units", DEFAULTS.get("prod_month_units", 30800.0))
+            )
+            if monthly_units_pay <= 0:
+                monthly_units_pay = DEFAULTS.get("prod_month_units", 30800.0)
+            fixed_month_pay = fixed_per_unit_pay * monthly_units_pay
+            depreciation_month_pay = 0.0
+
+        render_payback_block(
+            "single",
+            "Single workflow",
+            price_per_unit=float(P["be"].get("effective_price", 0.0)),
+            variable_per_unit=float(P["be"].get("variable_per_unit", 0.0)),
+            fixed_per_unit=fixed_per_unit_pay,
+            default_monthly_units=monthly_units_pay,
+            default_fixed_month=fixed_month_pay,
+            default_depreciation_month=depreciation_month_pay,
+            sym=pay_sym,
+            fx=pay_fx,
+            unit_lbl=unit_lbl_pay,
+        )
                 
 # ===========================================
 # Helpers específicos do Compare A×B
